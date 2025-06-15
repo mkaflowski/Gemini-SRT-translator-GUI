@@ -62,30 +62,10 @@ python main.py
 - **Batch Size** - Automatic for Gemini 2.0 models
 - **Audio Extraction** - Extract audio from video files
 
-### Auto-Features
-- **Auto-fetch TMDB** - Automatically get movie/TV info
-- **TV Series Detection** - Smart detection from file patterns
-- **Batch Size Optimization** - Optimized for different Gemini models
+## 🧩 To Do
 
-## 🎯 Use Cases
-
-### Movie Translation
-- Drag movie folder with subtitles
-- Automatic movie detection and TMDB lookup
-- Context-aware translation with plot information
-- Clean output filenames
-
-### TV Series Translation
-- Drag series folder with multiple episodes
-- Automatic TV series detection
-- Series-wide context for character names
-- Batch processing of all episodes
-
-### Professional Subtitling
-- High-quality Gemini AI translations
-- Context preservation for character names
-- Proper formatting maintenance
-- Batch processing for efficiency
+-  Getting description for each episode from TMDB
+-  Auto detecting Movie / TV Show
 
 ## 🔗 Related Projects
 
@@ -102,11 +82,6 @@ This GUI is built as a frontend for the [Gemini SRT Translator](https://github.c
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🧩 To Do
-
--  Getting description for each episode from TMDB
--  Auto detecting Movie / TV Show
 
 ## 🙏 Acknowledgments
 
