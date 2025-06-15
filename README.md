@@ -28,6 +28,10 @@ A powerful GUI application for translating SRT subtitle files using Google's Gem
 
 ## 🛠️ Installation
 
+'git clone https://github.com/mkaflowski/Gemini-SRT-translator-GUI.git
+cd Gemini-SRT-translator-GUI
+python main.py'
+
 ### Prerequisites
 - Python 3.8 or higher
 - Google Gemini API key
