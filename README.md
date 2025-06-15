@@ -9,7 +9,6 @@ A powerful GUI application for translating SRT subtitle files using Google's Gem
 ### 🚀 Core Functionality
 - **Drag & Drop Interface** - Simply drag subtitle files or folders
 - **Automatic Translation** - Uses Google Gemini AI for high-quality translations
-- **Smart Content Detection** - Automatically detects movies vs TV series
 - **Batch Processing** - Handle multiple subtitle files at once
 - **Language Code Support** - Customizable output language codes
 
@@ -103,6 +102,11 @@ This GUI is built as a frontend for the [Gemini SRT Translator](https://github.c
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🧩 To Do
+
+-  Getting description for each episode from TMDB
+-  Auto detecting Movie / TV Show
 
 ## 🙏 Acknowledgments
 
