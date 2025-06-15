@@ -1,0 +1,157 @@
+"""
+Configuration manager for the GUI application.
+Handles loading, saving, and managing application settings.
+"""
+
+import json
+from pathlib import Path
+
+
+class ConfigManager:
+    """Manages application configuration persistence"""
+
+    def __init__(self, config_file="gui_config.json"):
+        self.config_file = Path(config_file)
+        self.config = {}
+        self._default_config = {
+            'gemini_api_key': '',
+            'model': 'gemini-2.0-flash',
+            'tmdb_api_key': '',
+            'tmdb_id': '',
+            'api_expanded': False,
+            'settings_expanded': False,
+            'language': 'Polish',
+            'language_code': 'pl',
+            'extract_audio': False,
+            'auto_fetch_tmdb': True,  # Auto-fetch TMDB ID when files are loaded
+            'is_tv_series': False     # Whether TMDB ID is for TV series or movie
+        }
+        self.load_config()
+
+    def load_config(self):
+        """Load configuration from JSON file"""
+        try:
+            if self.config_file.exists():
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    loaded_config = json.load(f)
+                    # Merge with defaults to ensure all keys exist
+                    self.config = {**self._default_config, **loaded_config}
+            else:
+                self.config = self._default_config.copy()
+        except Exception as e:
+            print(f"Error loading configuration: {e}")
+            self.config = self._default_config.copy()
+
+    def save_config(self):
+        """Save current configuration to JSON file"""
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"Error saving configuration: {e}")
+            return False
+
+    def get(self, key, default=None):
+        """Get configuration value"""
+        return self.config.get(key, default)
+
+    def set(self, key, value):
+        """Set configuration value"""
+        self.config[key] = value
+
+    def update(self, updates):
+        """Update multiple configuration values"""
+        self.config.update(updates)
+
+    def get_api_config(self):
+        """Get API-related configuration"""
+        return {
+            'gemini_api_key': self.get('gemini_api_key', ''),
+            'model': self.get('model', 'gemini-pro'),
+            'tmdb_api_key': self.get('tmdb_api_key', '')
+        }
+
+    def get_ui_config(self):
+        """Get UI-related configuration"""
+        return {
+            'api_expanded': self.get('api_expanded', False),
+            'settings_expanded': self.get('settings_expanded', False)
+        }
+
+    def get_processing_config(self):
+        """Get processing-related configuration"""
+        return {
+            'language': self.get('language', 'Polish'),
+            'extract_audio': self.get('extract_audio', False),
+            'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True),
+            'tmdb_id': self.get('tmdb_id', '')
+        }
+
+    def has_gemini_api_key(self):
+        """Check if Gemini API key is configured"""
+        return bool(self.get('gemini_api_key', '').strip())
+
+    def has_tmdb_api_key(self):
+        """Check if TMDB API key is configured"""
+        return bool(self.get('tmdb_api_key', '').strip())
+
+    def has_tmdb_id(self):
+        """Check if TMDB ID is configured"""
+        return bool(self.get('tmdb_id', '').strip())
+
+    def get_config_summary(self):
+        """Get a summary of current configuration for logging"""
+        return {
+            'model': self.get('model', 'gemini-pro'),
+            'has_gemini_key': self.has_gemini_api_key(),
+            'has_tmdb_key': self.has_tmdb_api_key(),
+            'has_tmdb_id': self.has_tmdb_id(),
+            'language': self.get('language', 'Polish'),
+            'extract_audio': self.get('extract_audio', False),
+            'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True)
+        }
+
+    def validate_config(self):
+        """Validate current configuration and return any issues"""
+        issues = []
+
+        if not self.has_gemini_api_key():
+            issues.append("Gemini API key is missing")
+
+        model = self.get('model', '')
+        valid_models = ["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]
+        if model not in valid_models:
+            issues.append(f"Invalid model: {model}")
+
+        language = self.get('language', '')
+        if not language.strip():
+            issues.append("Language is not set")
+
+        return issues
+
+    def reset_to_defaults(self):
+        """Reset configuration to default values"""
+        self.config = self._default_config.copy()
+
+    def export_config(self, file_path):
+        """Export configuration to a different file"""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"Error exporting configuration: {e}")
+            return False
+
+    def import_config(self, file_path):
+        """Import configuration from a file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                imported_config = json.load(f)
+                # Validate and merge with defaults
+                self.config = {**self._default_config, **imported_config}
+            return True
+        except Exception as e:
+            print(f"Error importing configuration: {e}")
+            return False
