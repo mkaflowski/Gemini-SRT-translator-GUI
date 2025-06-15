@@ -213,42 +213,28 @@ class CLIRunner:
             'lt', 'lit', 'lithuanian'
         }
 
-        # Split filename by dots and other separators
         import re
-        parts = re.split(r'[.\-_\s]+', filename_stem.lower())
+        result = filename_stem
 
-        # Remove language code parts
-        cleaned_parts = []
-        for part in parts:
-            if part and part not in language_codes:
-                cleaned_parts.append(part)
+        # Remove language codes while preserving spaces and case
+        for lang_code in language_codes:
+            # Remove language codes with various separators but preserve spaces
+            patterns = [
+                rf'\.{re.escape(lang_code)}(?=\.|$)',  # .lang at end or before dot
+                rf'[\-_]{re.escape(lang_code)}(?=[\-_\.]|$)',  # -lang, _lang (not spaces)
+                rf'^{re.escape(lang_code)}[\-_\.]',  # lang at start with separator
+            ]
 
-        # Rejoin with original casing preserved
-        if cleaned_parts:
-            # Try to preserve original casing by finding the parts in original string
-            original_lower = filename_stem.lower()
-            result = filename_stem
+            for pattern in patterns:
+                result = re.sub(pattern, '', result, flags=re.IGNORECASE)
 
-            # Remove language codes while preserving case
-            for lang_code in language_codes:
-                # Remove standalone language codes (with word boundaries)
-                patterns = [
-                    rf'\.{re.escape(lang_code)}(?=\.|$)',  # .lang at end or before dot
-                    rf'(?<=\.)^{re.escape(lang_code)}\.',  # lang. at start after dot
-                    rf'[\-_\s]{re.escape(lang_code)}(?=[\-_\s\.]|$)',  # -lang, _lang, lang
-                    rf'^{re.escape(lang_code)}[\-_\s\.]',  # lang at start
-                ]
+        # Clean up multiple dots, hyphens, underscores (but preserve spaces)
+        result = re.sub(r'\.+', '.', result)  # Multiple dots to single dot
+        result = re.sub(r'\-+', '-', result)  # Multiple hyphens to single hyphen
+        result = re.sub(r'_+', '_', result)   # Multiple underscores to single underscore
+        result = result.strip('.-_ ')         # Remove separators from start/end
 
-                for pattern in patterns:
-                    result = re.sub(pattern, '', result, flags=re.IGNORECASE)
-
-            # Clean up multiple separators
-            result = re.sub(r'[.\-_\s]+', '.', result)
-            result = result.strip('.-_ ')
-
-            return result if result else filename_stem
-
-        return filename_stem
+        return result if result else filename_stem
 
     def _build_gst_command(self, subtitle_file, video_file, config):
         """Build the gst command based on configuration"""
