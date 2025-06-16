@@ -54,11 +54,12 @@ class DragDropGUI:
         self.cancel_event = threading.Event()
         self.image_label = None
 
+        icon_path = (Path(__file__).resolve().parent / "../../gst_gui/assets/icon.png").resolve()
         try:
-            icon = tk.PhotoImage(file="icon.png")  # or icon.gif
+            icon = tk.PhotoImage(file=str(icon_path))
             self.root.iconphoto(False, icon)
-        except tk.TclError:
-            pass  # Icon file not found, continue without icon
+        except Exception as e:
+            print(f"Failed to load icon: {e}")
 
         window_width = 1000
         window_height = 800
