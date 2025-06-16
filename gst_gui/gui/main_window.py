@@ -6,7 +6,6 @@ Coordinates between UI components, file processing, and configuration.
 import tkinter as tk
 from io import BytesIO
 from tkinter import ttk, messagebox, scrolledtext
-import os
 import threading
 from pathlib import Path
 
@@ -17,10 +16,10 @@ from PIL import ImageTk, Image
 try:
     from .config_manager import ConfigManager
 except ImportError:
-    from gui.config_manager import ConfigManager
+    from gst_gui.gui.config_manager import ConfigManager
 
 try:
-    from utils.file_utils import (
+    from gst_gui.utils.file_utils import (
         extract_movie_info,
         format_movie_info,
         classify_file_type,
@@ -31,7 +30,7 @@ except ImportError:
     import os
 
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from utils.file_utils import (
+    from gst_gui.utils.file_utils import (
         extract_movie_info,
         format_movie_info,
         classify_file_type,
@@ -39,9 +38,9 @@ except ImportError:
     )
 
 try:
-    from utils.cli_runner import CLIRunner
+    from gst_gui.utils.cli_runner import CLIRunner
 except ImportError:
-    from utils.cli_runner import CLIRunner
+    from gst_gui.utils.cli_runner import CLIRunner
 
 
 class DragDropGUI:
@@ -1163,7 +1162,7 @@ class DragDropGUI:
 
                 # Import TMDB helper
                 try:
-                    from utils.tmdb_helper import TMDBHelper
+                    from gst_gui.utils.tmdb_helper import TMDBHelper
                 except ImportError:
                     if not silent:
                         self.log_to_console("❌ Could not import TMDB helper")
@@ -1304,7 +1303,7 @@ class DragDropGUI:
 
                 # Import TMDB helper
                 try:
-                    from utils.tmdb_helper import TMDBHelper
+                    from gst_gui.utils.tmdb_helper import TMDBHelper
                 except ImportError:
                     if not silent:
                         self.log_to_console("❌ Could not import TMDB helper")

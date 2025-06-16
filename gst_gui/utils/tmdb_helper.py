@@ -4,7 +4,6 @@ TMDB API helper for fetching movie information and IDs.
 
 import requests
 import json
-from urllib.parse import quote
 
 
 class TMDBHelper:
@@ -298,7 +297,7 @@ def get_tmdb_id_for_file(filename, tmdb_api_key, logger=None):
     try:
         from .file_utils import extract_movie_info
     except ImportError:
-        from utils.file_utils import extract_movie_info
+        from gst_gui.utils.file_utils import extract_movie_info
 
     # Extract movie information from filename
     title, year = extract_movie_info(filename)

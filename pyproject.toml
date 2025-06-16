@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gst_gui"
+version = "0.1.0"
+description = "Gemini SRT Translator GUI"
+authors = [{ name = "Mateusz Kaflowski" }]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "Pillow>=9.0.0",
+    "requests>=2.25.0",
+    "srt>=3.5.0",
+    "tkinterdnd2>=0.3.0"
+]
+
+[project.scripts]
+gst_gui = "gst_gui.main:main"
