@@ -8,6 +8,7 @@ from io import BytesIO
 from tkinter import ttk, messagebox, scrolledtext
 import threading
 from pathlib import Path
+import os
 
 import requests
 from PIL import ImageTk, Image
