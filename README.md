@@ -11,6 +11,7 @@ A powerful GUI application for translating SRT subtitle files using Google's Gem
 - **Automatic Translation** - Uses Google Gemini AI for high-quality translations
 - **Batch Processing** - Handle multiple subtitle files at once
 - **Language Code Support** - Customizable output language codes
+- **Translator info** - Add translator info at hte beginning of subtitles
 
 ### 🎭 Movie & TV Integration
 - **TMDB Integration** - Automatic movie/TV series information fetching
