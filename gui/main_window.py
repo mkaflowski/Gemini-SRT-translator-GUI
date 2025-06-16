@@ -4,10 +4,14 @@ Coordinates between UI components, file processing, and configuration.
 """
 
 import tkinter as tk
+from io import BytesIO
 from tkinter import ttk, messagebox, scrolledtext
 import os
 import threading
 from pathlib import Path
+
+import requests
+from PIL import ImageTk, Image
 
 # Import our custom modules
 try:
@@ -25,6 +29,7 @@ try:
 except ImportError:
     import sys
     import os
+
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
     from utils.file_utils import (
         extract_movie_info,
@@ -47,6 +52,7 @@ class DragDropGUI:
         self.root.title("Gemini SRT Translator")
         self.processing_thread = None
         self.cancel_event = threading.Event()
+        self.image_label = None
 
         try:
             icon = tk.PhotoImage(file="icon.png")  # or icon.gif
@@ -265,11 +271,13 @@ class DragDropGUI:
         ttk.Label(self.api_options_frame, text="Model:").grid(row=0, column=2, sticky=tk.W, padx=(20, 0), pady=(10, 5))
         self.model = tk.StringVar(value=api_config['model'])
         model_combo = ttk.Combobox(self.api_options_frame, textvariable=self.model, width=25,
-                                   values=["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"])
+                                   values=["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash",
+                                           "gemini-2.5-pro-preview-06-05"])
         model_combo.grid(row=0, column=3, sticky=tk.W, padx=(10, 0), pady=(10, 5))
 
         # TMDB API Key
-        ttk.Label(self.api_options_frame, text="TMDB API Key (optional):").grid(row=1, column=0, sticky=tk.W, pady=(5, 5))
+        ttk.Label(self.api_options_frame, text="TMDB API Key (optional):").grid(row=1, column=0, sticky=tk.W,
+                                                                                pady=(5, 5))
         self.tmdb_api_key = tk.StringVar(value=api_config['tmdb_api_key'])
         tmdb_entry = ttk.Entry(self.api_options_frame, textvariable=self.tmdb_api_key, show="*", width=50)
         tmdb_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=(5, 5))
@@ -291,7 +299,8 @@ class DragDropGUI:
         language_entry.grid(row=0, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 5))
 
         # Language code setting
-        ttk.Label(self.settings_options_frame, text="Code:").grid(row=0, column=2, sticky=tk.W, padx=(20, 0), pady=(10, 5))
+        ttk.Label(self.settings_options_frame, text="Code:").grid(row=0, column=2, sticky=tk.W, padx=(20, 0),
+                                                                  pady=(10, 5))
         self.language_code = tk.StringVar(value=processing_config.get('language_code', 'pl'))
         language_code_entry = ttk.Entry(self.settings_options_frame, textvariable=self.language_code, width=5)
         language_code_entry.grid(row=0, column=3, sticky=tk.W, padx=(10, 0), pady=(10, 5))
@@ -311,27 +320,58 @@ class DragDropGUI:
         # TV Series checkbox
         self.is_tv_series = tk.BooleanVar(value=processing_config.get('is_tv_series', False))
         tv_series_check = ttk.Checkbutton(self.settings_options_frame, text="TV Series",
-                                         variable=self.is_tv_series)
+                                          variable=self.is_tv_series)
         tv_series_check.grid(row=1, column=2, sticky=tk.W, padx=(10, 0), pady=(10, 5))
 
         # Fetch TMDB info button (using TMDB ID)
         fetch_tmdb_button = tk.Button(self.settings_options_frame, text="🎬 Fetch",
-                                     bg='#d0e0ff', fg='black', font=('Arial', 9),
-                                     relief='raised', bd=1, pady=3,
-                                     command=self.fetch_tmdb_info)
+                                      bg='#d0e0ff', fg='black', font=('Arial', 9),
+                                      relief='raised', bd=1, pady=3,
+                                      command=self.fetch_tmdb_info)
         fetch_tmdb_button.grid(row=1, column=3, sticky=tk.W, padx=(10, 0), pady=(10, 5))
 
         # TMDB Overview section
         ttk.Label(self.settings_options_frame, text="Overview:").grid(row=2, column=0, sticky=tk.W, pady=(10, 5))
         self.overview = tk.StringVar(value='')
         overview_entry = ttk.Entry(self.settings_options_frame, textvariable=self.overview, width=60)
-        overview_entry.grid(row=2, column=1, columnspan=2, sticky=(tk.W, tk.E), padx=(10, 0), pady=(10, 5))
+        overview_entry.grid(row=2, column=1, columnspan=4, sticky=(tk.W, tk.E), padx=(10, 0), pady=(10, 5))
 
         # Auto-fetch TMDB checkbox
         self.auto_fetch_tmdb = tk.BooleanVar(value=processing_config['auto_fetch_tmdb'])
         auto_fetch_check = ttk.Checkbutton(self.settings_options_frame, text="Auto-fetch TMDB ID when loading files",
-                                          variable=self.auto_fetch_tmdb)
+                                           variable=self.auto_fetch_tmdb)
         auto_fetch_check.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(5, 10))
+        self.setup_image_display()
+
+    def setup_image_display(self):
+        ttk.Label(self.settings_options_frame, text="Poster:").grid(row=4, column=0, sticky=tk.W, pady=(10, 5))
+
+        # Create a label to hold the image
+        self.image_label = ttk.Label(self.settings_options_frame)
+        self.image_label.grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+
+    # Function to load and display image
+    def load_image(self, url, width=100, height=150):  # 100x150 is more typical for movie posters
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+
+            # Open image from bytes
+            image = Image.open(BytesIO(response.content))
+
+            # Resize image
+            image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+            # Convert to PhotoImage
+            photo = ImageTk.PhotoImage(image)
+
+            # Update the label
+            self.image_label.configure(image=photo)
+            self.image_label.image = photo
+
+        except Exception as e:
+            print(f"Error loading image: {e}")
+            self.image_label.configure(text="Image not available")
 
         # Configure column weights
         self.settings_options_frame.columnconfigure(1, weight=1)
@@ -622,21 +662,21 @@ class DragDropGUI:
             # Subtitle file
             self.tree.insert('', 'end', text='☑️ Single file',
                              values=(file_path.name, "No match", title, year_display,
-                                   str(self.current_folder_path), "📝 Subtitle file"),
+                                     str(self.current_folder_path), "📝 Subtitle file"),
                              tags=('subtitle_only',))
         elif file_type == 'video':
             # Video file
             self.tree.insert('', 'end', text='☑️ Single file',
                              values=("No match", file_path.name, title, year_display,
-                                   str(self.current_folder_path), "🎬 Video file"),
+                                     str(self.current_folder_path), "🎬 Video file"),
                              tags=('video_only',))
         else:
             # Other file type
             self.tree.insert('', 'end', text='☑️ Single file',
                              values=(file_path.name if file_type == 'text' else "N/A",
-                                   file_path.name if file_type == 'video' else "N/A",
-                                   title, year_display, str(self.current_folder_path),
-                                   f"📄 {file_type.title()}"),
+                                     file_path.name if file_type == 'video' else "N/A",
+                                     title, year_display, str(self.current_folder_path),
+                                     f"📄 {file_type.title()}"),
                              tags=('no_match',))
 
         # Auto-fetch TMDB ID after adding to TreeView (with small delay to ensure UI is updated)
@@ -684,7 +724,7 @@ class DragDropGUI:
 
         # Extract movie title and year from TreeView
         movie_title = values[2]  # Title column
-        movie_year = values[3]   # Year column
+        movie_year = values[3]  # Year column
 
         if not movie_title or movie_title in ["Unknown Movie", "No files found"]:
             return
@@ -1103,6 +1143,7 @@ class DragDropGUI:
 
     def _start_tmdb_fetch_by_id_async(self, tmdb_id, api_key, is_tv_series, silent=False):
         """Start TMDB fetch by ID in separate thread"""
+
         def fetch_tmdb():
             try:
                 content_type = "TV Series" if is_tv_series else "Movie"
@@ -1129,8 +1170,8 @@ class DragDropGUI:
                 if not tmdb.test_api_key():
                     if not silent:
                         messagebox.showerror("Invalid API Key",
-                                            "TMDB API key is invalid.\n\n"
-                                            "Please check your API key and try again.")
+                                             "TMDB API key is invalid.\n\n"
+                                             "Please check your API key and try again.")
                     else:
                         self.log_to_console("❌ TMDB API key is invalid")
                     return
@@ -1160,7 +1201,8 @@ class DragDropGUI:
                             'title': data.get('name', ''),  # TV shows use 'name'
                             'year': data.get('first_air_date', '')[:4] if data.get('first_air_date') else '',
                             'overview': data.get('overview', ''),
-                            'type': 'TV Series'
+                            'type': 'TV Series',
+                            'poster_path': data.get('poster_path', '')
                         }
                     else:
                         movie = {
@@ -1168,7 +1210,8 @@ class DragDropGUI:
                             'title': data.get('title', ''),  # Movies use 'title'
                             'year': data.get('release_date', '')[:4] if data.get('release_date') else '',
                             'overview': data.get('overview', ''),
-                            'type': 'Movie'
+                            'type': 'Movie',
+                            'poster_path': data.get('poster_path', '')
                         }
 
                     if not silent:
@@ -1181,8 +1224,8 @@ class DragDropGUI:
                     if not silent:
                         self.log_to_console(f"❌ {content_type} not found")
                         messagebox.showwarning(f"{content_type} Not Found",
-                                              f"Could not find {content_type.lower()} with TMDB ID: {tmdb_id}\n\n"
-                                              f"Please check the ID and content type.")
+                                               f"Could not find {content_type.lower()} with TMDB ID: {tmdb_id}\n\n"
+                                               f"Please check the ID and content type.")
                     else:
                         self.log_to_console(f"❌ No {content_type.lower()} found with TMDB ID: {tmdb_id}")
                 else:
@@ -1221,6 +1264,10 @@ class DragDropGUI:
                 if movie.get('year'):
                     details_msg += f"Year: {movie['year']}\n"
                 details_msg += f"TMDB ID: {movie['id']}\n"
+
+                if movie["poster_path"]:
+                    self.load_image("https://image.tmdb.org/t/p/w154" + movie["poster_path"])
+
                 if overview:
                     # Truncate overview for popup (keep full version in the field)
                     display_overview = overview
@@ -1238,6 +1285,7 @@ class DragDropGUI:
 
     def _start_tmdb_search_async(self, title, year, api_key, silent=False):
         """Start TMDB search in separate thread"""
+
         def search_tmdb():
             try:
                 if not silent:
@@ -1263,8 +1311,8 @@ class DragDropGUI:
                 if not tmdb.test_api_key():
                     if not silent:
                         messagebox.showerror("Invalid API Key",
-                                            "TMDB API key is invalid.\n\n"
-                                            "Please check your API key and try again.")
+                                             "TMDB API key is invalid.\n\n"
+                                             "Please check your API key and try again.")
                     else:
                         self.log_to_console("❌ TMDB API key is invalid")
                     return
@@ -1279,7 +1327,7 @@ class DragDropGUI:
                     if not silent:
                         self.log_to_console("❌ No matching movie found")
                         messagebox.showwarning("No Match Found",
-                                              f"Could not find a matching movie for:\n'{title}'{' (' + year + ')' if year else ''}")
+                                               f"Could not find a matching movie for:\n'{title}'{' (' + year + ')' if year else ''}")
                     else:
                         self.log_to_console(f"❌ No TMDB match found for: {title}" + (f" ({year})" if year else ""))
 
@@ -1323,6 +1371,8 @@ class DragDropGUI:
             # Update the overview field
             overview = movie.get('overview', '')
             self._update_overview_field(overview)
+            if movie["poster_path"]:
+                self.load_image("https://image.tmdb.org/t/p/w154" + movie["poster_path"])
 
             # Log success
             year_text = f" ({movie['year']})" if movie['year'] else ""
@@ -1352,6 +1402,7 @@ class DragDropGUI:
 
     def log_to_console(self, message):
         """Add message to console"""
+
         def update_console():
             if hasattr(self, 'console_text'):
                 self.console_text.insert(tk.END, message + "\n")
