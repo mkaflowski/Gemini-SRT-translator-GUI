@@ -13,11 +13,9 @@ import srt
 class CLIRunner:
     """Handles execution of CLI commands with real-time output"""
 
-
     def __init__(self, logger=None):
         self.logger = logger
         self.gst_cmd = self._find_gst_command()
-
 
     def _find_gst_command(self):
         """Find the gst command executable"""
@@ -289,8 +287,8 @@ class CLIRunner:
         # Clean up multiple dots, hyphens, underscores (but preserve spaces)
         result = re.sub(r'\.+', '.', result)  # Multiple dots to single dot
         result = re.sub(r'\-+', '-', result)  # Multiple hyphens to single hyphen
-        result = re.sub(r'_+', '_', result)   # Multiple underscores to single underscore
-        result = result.strip('.-_ ')         # Remove separators from start/end
+        result = re.sub(r'_+', '_', result)  # Multiple underscores to single underscore
+        result = result.strip('.-_ ')  # Remove separators from start/end
 
         return result if result else filename_stem
 
@@ -366,16 +364,19 @@ class CLIRunner:
 
         # Add video file and audio extraction if configured
         extract_audio = config.get('extract_audio', False)
-        if video_file and extract_audio:
-            cmd.extend(['-v', str(video_file)])
-            cmd.append('--extract-audio')
-            self.log(f"   🎵 Extract audio: enabled")
-        elif video_file and not extract_audio:
-            self.log(f"   🎬 Video file available but extract audio disabled")
-            self.log(f"   🎬 Trying to extract subtitles")
-            cmd.extend(['-v', str(video_file)])
-        elif not video_file:
-            self.log(f"   ℹ️ No video file - processing subtitle only")
+        if video_file:
+            video_path = Path(video_file)
+            if not video_path.name.endswith(("No match", "None")):
+                if  extract_audio:
+                    cmd.extend(['-v', str(video_file)])
+                    cmd.append('--extract-audio')
+                    self.log(f"   🎵 Extract audio: enabled")
+                elif not extract_audio:
+                    self.log(f"   🎬 Video file available but extract audio disabled")
+                    self.log(f"   🎬 Trying to extract subtitles")
+                    cmd.extend(['-v', str(video_file)])
+                elif not video_file:
+                    self.log(f"   ℹ️ No video file - processing subtitle only")
 
         return cmd
 
