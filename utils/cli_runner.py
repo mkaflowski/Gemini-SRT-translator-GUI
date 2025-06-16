@@ -2,10 +2,12 @@
 CLI command runner for executing gst translation commands.
 Handles process management and output streaming.
 """
-
+import datetime
 import subprocess
 import sys
 from pathlib import Path
+
+import srt
 
 
 class CLIRunner:
@@ -117,7 +119,7 @@ class CLIRunner:
         """
         cancel_event = config.get('cancel_event')
 
-        # Sprawdź anulowanie przed rozpoczęciem
+        # Check cancellation before starting
         if cancel_event and cancel_event.is_set():
             self.log(f"🛑 Anulowanie przed przetwarzaniem pary {pair_number}")
             return False
@@ -140,8 +142,42 @@ class CLIRunner:
             self.log(f"❌ Failed to build command for pair {pair_number}")
             return False
 
-        # Execute command z obsługą anulowania
-        return self._execute_command(cmd, pair_number, cancel_event)
+        # Execute command with cancellation support
+        success = self._execute_command(cmd, pair_number, cancel_event)
+
+        # ADD TRANSLATOR INFO HERE - after successful processing
+        if success and not (cancel_event and cancel_event.is_set()):
+            try:
+                # Get the output file path that was created by gst command
+                output_file = self._get_output_file_path(subtitle_file, config)
+
+                # Check if we should add translator info
+                if config.get('add_translator_info', False):
+                    # Generate translator info text
+                    model_name = config.get('model', 'Unknown Model')
+
+                    translator_info = f"# Translated by {model_name} #"
+
+                    # Add translator info to the processed subtitle file
+                    self.add_translator_info(output_file, translator_info)
+
+            except Exception as e:
+                self.log(f"⚠️ Could not add translator info: {e}")
+                # Don't fail the whole process for this
+
+        return success
+
+    def _get_output_file_path(self, subtitle_file, config):
+        """Get the output file path that would be created by gst command"""
+        language_code = config.get('language_code', 'pl')
+        subtitle_path = Path(subtitle_file)
+
+        # Clean the original filename from language codes (same logic as in _build_gst_command)
+        cleaned_stem = self._clean_filename_from_language_codes(subtitle_path.stem)
+        output_filename = f"{cleaned_stem}.{language_code}.srt"
+        output_path = subtitle_path.parent / output_filename
+
+        return output_path
 
     def _get_language_code(self, language):
         """Convert language name to short code"""
@@ -364,7 +400,6 @@ class CLIRunner:
                         process.wait()
                     return False
 
-                # Czytaj linię z timeout
                 try:
                     line = process.stdout.readline()
                     if not line:
@@ -456,3 +491,57 @@ class CLIRunner:
         except Exception as e:
             self.log(f"Error during execution: {e}")
             return False
+
+    def add_translator_info(self, dest_srt_file, info):
+        """Add translator information as the first subtitle entry"""
+        try:
+            if not Path(dest_srt_file).exists():
+                if self.logger:
+                    self.logger(f"❌ SRT file not found: {dest_srt_file}")
+                return
+
+            # Load the SRT content
+            with open(dest_srt_file, "r", encoding="utf-8") as f:
+                srt_content = f.read()
+
+            # Parse subtitles
+            subtitles = list(srt.parse(srt_content))
+
+            if subtitles:
+                first_start = subtitles[0].start
+            else:
+                # If no subtitles exist, set an arbitrary end time for the info subtitle
+                first_start = datetime.timedelta(seconds=5)
+
+            # Determine the end time as the minimum of first_start and 5s
+            end_time = min(first_start, datetime.timedelta(seconds=5))
+
+            # If end time is exactly 5s, start at 1s. Otherwise, start at 0s.
+            if end_time == datetime.timedelta(seconds=5):
+                start_time = datetime.timedelta(seconds=1)
+            else:
+                start_time = datetime.timedelta(seconds=0)
+
+            # Add the info subtitle
+            new_sub = srt.Subtitle(
+                index=1,  # temporary, will be reindexed
+                start=start_time,
+                end=end_time,
+                content=info
+            )
+
+            subtitles.insert(0, new_sub)
+
+            # Re-index and sort
+            subtitles = list(srt.sort_and_reindex(subtitles))
+
+            # Write back to file
+            with open(dest_srt_file, "w", encoding="utf-8") as f:
+                f.write(srt.compose(subtitles))
+
+            if self.logger:
+                self.logger(f"✅ Added translator info to: {Path(dest_srt_file).name}")
+
+        except Exception as e:
+            if self.logger:
+                self.logger(f"❌ Error adding translator info: {e}")

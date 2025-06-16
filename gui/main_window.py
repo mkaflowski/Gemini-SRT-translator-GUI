@@ -323,6 +323,11 @@ class DragDropGUI:
                                           variable=self.is_tv_series)
         tv_series_check.grid(row=1, column=2, sticky=tk.W, padx=(10, 0), pady=(10, 5))
 
+        self.add_translator_info = tk.BooleanVar(value=processing_config.get('add_translator_info', True))
+        add_translator_info_check = ttk.Checkbutton(self.settings_options_frame, text="Add translator info",
+                                          variable=self.add_translator_info)
+        add_translator_info_check.grid(row=3, column=4, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+
         # Fetch TMDB info button (using TMDB ID)
         fetch_tmdb_button = tk.Button(self.settings_options_frame, text="🎬 Fetch",
                                       bg='#d0e0ff', fg='black', font=('Arial', 9),
@@ -499,7 +504,8 @@ class DragDropGUI:
             'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
             'extract_audio': self.extract_audio.get() if hasattr(self, 'extract_audio') else False,
             'auto_fetch_tmdb': self.auto_fetch_tmdb.get() if hasattr(self, 'auto_fetch_tmdb') else True,
-            'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False
+            'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
+            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True
         }
 
         self.config_manager.update(config_updates)
@@ -1064,7 +1070,8 @@ class DragDropGUI:
                     'overview': self.overview.get() if hasattr(self, 'overview') else '',
                     'movie_title': self._get_movie_title_from_treeview(),
                     'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
-                    'cancel_event': self.cancel_event  # Przekaż event do CLI runner
+                    'cancel_event': self.cancel_event,
+                    'add_translator_info': self.add_translator_info.get() if hasattr(self, 'is_tv_series') else True
                 }
 
                 # Run translation using CLI runner
