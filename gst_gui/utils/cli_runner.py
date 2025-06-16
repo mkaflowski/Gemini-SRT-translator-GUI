@@ -146,10 +146,13 @@ class CLIRunner:
         if success and not (cancel_event and cancel_event.is_set()):
             try:
                 # Get the output file path that was created by gst command
-                output_file = self._get_output_file_path(subtitle_file, config)
+                if subtitle_file:
+                    output_file = self._get_output_file_path(subtitle_file, config)
+                else:
+                    output_file = self._get_output_file_path(video_file, config)
 
                 # Check if we should add translator info
-                if config.get('add_translator_info', False):
+                if config.get('add_translator_info', True):
                     # Generate translator info text
                     model_name = config.get('model', 'Unknown Model')
 
