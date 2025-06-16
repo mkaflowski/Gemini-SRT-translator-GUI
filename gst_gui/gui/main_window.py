@@ -973,7 +973,8 @@ class DragDropGUI:
             return
 
         # Filter pairs based on extract audio setting
-        valid_pairs = self._filter_valid_pairs(selected_pairs)
+        # valid_pairs = self._filter_valid_pairs(selected_pairs)
+        valid_pairs = selected_pairs
 
         if not valid_pairs:
             extract_audio = self.extract_audio.get()
@@ -1077,10 +1078,9 @@ class DragDropGUI:
                 # Run translation using CLI runner
                 success = self.cli_runner.run_translation_batch(full_path_pairs, config)
 
-                # Sprawdź czy zostało anulowane
                 if self.cancel_event.is_set():
-                    self.root.after(0, lambda: self.status_var.set("Anulowano"))
-                    self.root.after(0, lambda: self.log_to_console("🛑 Przetwarzanie zostało anulowane"))
+                    self.root.after(0, lambda: self.status_var.set("Cancelled"))
+                    self.root.after(0, lambda: self.log_to_console("🛑 Processing cancelled"))
                 elif success:
                     self.root.after(0, lambda: self.status_var.set("Processing completed successfully"))
                 else:
@@ -1091,12 +1091,9 @@ class DragDropGUI:
                 self.root.after(0, lambda: self.log_to_console(error_msg))
                 self.root.after(0, lambda: self.status_var.set("Processing error"))
             finally:
-                # Zawsze przywróć przycisk tłumaczenia
                 self.root.after(0, self.show_translate_button)
-                # Zresetuj cancel event
                 self.cancel_event.clear()
 
-        # Pokaż przycisk anulowania
         self.show_cancel_button()
 
         # Reset cancel event przed rozpoczęciem

@@ -80,7 +80,6 @@ class CLIRunner:
         cancel_event = config.get('cancel_event')
 
         for i, pair in enumerate(file_pairs, 1):
-            # Sprawdź czy została wysłana komenda anulowania
             if cancel_event and cancel_event.is_set():
                 self.log(f"🛑 Anulowanie przetwarzania na parze {i}/{total_count}")
                 break
@@ -91,7 +90,6 @@ class CLIRunner:
             if success:
                 success_count += 1
             elif cancel_event and cancel_event.is_set():
-                # Jeśli nie udało się z powodu anulowania
                 break
 
             self.log("─" * 30)
@@ -121,15 +119,14 @@ class CLIRunner:
 
         # Check cancellation before starting
         if cancel_event and cancel_event.is_set():
-            self.log(f"🛑 Anulowanie przed przetwarzaniem pary {pair_number}")
+            self.log(f"🛑 Canceling before pair {pair_number}")
             return False
 
         subtitle_file = pair.get('subtitle')
         video_file = pair.get('video')
 
         if not subtitle_file:
-            self.log(f"❌ No subtitle file for pair {pair_number}")
-            return False
+            self.log(f"No subtitle file for pair {pair_number}")
 
         self.log(f"   📝 Subtitles: {subtitle_file}")
         if video_file:
@@ -296,12 +293,18 @@ class CLIRunner:
 
     def _build_gst_command(self, subtitle_file, video_file, config):
         """Build the gst command based on configuration"""
-        cmd = [self.gst_cmd, 'translate', '-i', str(subtitle_file)]
+        cmd = [self.gst_cmd, 'translate']
+        if subtitle_file:
+            cmd.extend(['-i', str(subtitle_file)])
 
         # Add output filename with language code (removing old language codes)
         language = config.get('language', 'Polish')
         language_code = config.get('language_code', 'pl')  # Use code from GUI instead of converting
-        subtitle_path = Path(subtitle_file)
+
+        if subtitle_file:
+            subtitle_path = Path(subtitle_file)
+        else:
+            subtitle_path = Path(video_file)
 
         # Clean the original filename from language codes
         cleaned_stem = self._clean_filename_from_language_codes(subtitle_path.stem)
@@ -366,6 +369,8 @@ class CLIRunner:
             self.log(f"   🎵 Extract audio: enabled")
         elif video_file and not extract_audio:
             self.log(f"   🎬 Video file available but extract audio disabled")
+            self.log(f"   🎬 Trying to extract subtitles")
+            cmd.extend(['-v', str(video_file)])
         elif not video_file:
             self.log(f"   ℹ️ No video file - processing subtitle only")
 
