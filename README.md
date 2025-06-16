@@ -9,7 +9,6 @@ A powerful GUI application for translating SRT subtitle files using Google's Gem
 ### 🚀 Core Functionality
 - **Drag & Drop Interface** - Simply drag subtitle files or folders
 - **Automatic Translation** - Uses Google Gemini AI for high-quality translations
-- **Smart Content Detection** - Automatically detects movies vs TV series
 - **Batch Processing** - Handle multiple subtitle files at once
 - **Language Code Support** - Customizable output language codes
 
@@ -63,30 +62,10 @@ python main.py
 - **Batch Size** - Automatic for Gemini 2.0 models
 - **Audio Extraction** - Extract audio from video files
 
-### Auto-Features
-- **Auto-fetch TMDB** - Automatically get movie/TV info
-- **TV Series Detection** - Smart detection from file patterns
-- **Batch Size Optimization** - Optimized for different Gemini models
+## 🧩 To Do
 
-## 🎯 Use Cases
-
-### Movie Translation
-- Drag movie folder with subtitles
-- Automatic movie detection and TMDB lookup
-- Context-aware translation with plot information
-- Clean output filenames
-
-### TV Series Translation
-- Drag series folder with multiple episodes
-- Automatic TV series detection
-- Series-wide context for character names
-- Batch processing of all episodes
-
-### Professional Subtitling
-- High-quality Gemini AI translations
-- Context preservation for character names
-- Proper formatting maintenance
-- Batch processing for efficiency
+-  Getting description for each episode from TMDB
+-  Auto detecting Movie / TV Show
 
 ## 🔗 Related Projects
 
