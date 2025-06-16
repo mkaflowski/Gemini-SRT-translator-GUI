@@ -674,7 +674,7 @@ class DragDropGUI:
         elif file_type == 'video':
             # Video file
             self.tree.insert('', 'end', text='☑️ Single file',
-                             values=("No match", file_path.name, title, year_display,
+                             values=(None, file_path.name, title, year_display,
                                      str(self.current_folder_path), "🎬 Video file"),
                              tags=('video_only',))
         else:
