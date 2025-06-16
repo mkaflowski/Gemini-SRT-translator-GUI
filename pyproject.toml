@@ -19,3 +19,9 @@ dependencies = [
 
 [project.scripts]
 gst_gui = "gst_gui.main:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"gst_gui.assets" = ["*.png"]
