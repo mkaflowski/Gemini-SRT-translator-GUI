@@ -299,6 +299,8 @@ class CLIRunner:
             subtitle_path = Path(subtitle_file)
             if not subtitle_path.name.endswith(("No match", "None")):
                 cmd.extend(['-i', str(subtitle_file)])
+            else:
+                subtitle_file = None
 
         # Add output filename with language code (removing old language codes)
         language = config.get('language', 'Polish')
