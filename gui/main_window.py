@@ -45,8 +45,31 @@ class DragDropGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Gemini SRT Translator")
-        self.root.geometry("900x700")
+        self.processing_thread = None
+        self.cancel_event = threading.Event()
+
+        try:
+            icon = tk.PhotoImage(file="icon.png")  # or icon.gif
+            self.root.iconphoto(False, icon)
+        except tk.TclError:
+            pass  # Icon file not found, continue without icon
+
+        window_width = 1000
+        window_height = 800
+
+        self.root.geometry(f"{window_width}x{window_height}")
         self.root.configure(bg='#f0f0f0')
+
+        # Get screen dimensions
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # Calculate center position
+        center_x = int(screen_width / 2 - window_width / 2)
+        center_y = int(screen_height / 2 - window_height / 2)
+
+        # Set geometry with center position
+        self.root.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')
 
         # Initialize configuration manager
         self.config_manager = ConfigManager()
@@ -301,7 +324,7 @@ class DragDropGUI:
         # TMDB Overview section
         ttk.Label(self.settings_options_frame, text="Overview:").grid(row=2, column=0, sticky=tk.W, pady=(10, 5))
         self.overview = tk.StringVar(value='')
-        overview_entry = ttk.Entry(self.settings_options_frame, textvariable=self.overview, width=60, state='readonly')
+        overview_entry = ttk.Entry(self.settings_options_frame, textvariable=self.overview, width=60)
         overview_entry.grid(row=2, column=1, columnspan=2, sticky=(tk.W, tk.E), padx=(10, 0), pady=(10, 5))
 
         # Auto-fetch TMDB checkbox
@@ -315,13 +338,26 @@ class DragDropGUI:
 
     def _create_action_buttons(self, parent):
         """Create action buttons"""
+        # Ramka dla przycisków
+        buttons_frame = ttk.Frame(parent)
+        buttons_frame.grid(row=6, column=0, pady=(10, 10), sticky=(tk.W, tk.E))
+        buttons_frame.columnconfigure(0, weight=1)
+        buttons_frame.columnconfigure(1, weight=1)
+
         # Translate Button
-        translate_button = tk.Button(parent, text="🌐 TRANSLATE",
-                                     bg='#f0f0f0', fg='black', font=('Arial', 12, 'bold'),
-                                     relief='raised', bd=3, pady=10,
-                                     activebackground='#e0e0e0', activeforeground='black',
-                                     command=self.start_translation)
-        translate_button.grid(row=6, column=0, pady=(10, 10), sticky=(tk.W, tk.E))
+        self.translate_button = tk.Button(buttons_frame, text="🌐 TRANSLATE",
+                                          bg='#f0f0f0', fg='black', font=('Arial', 12, 'bold'),
+                                          relief='raised', bd=3, pady=10,
+                                          activebackground='#e0e0e0', activeforeground='black',
+                                          command=self.start_translation)
+        self.translate_button.grid(row=0, column=0, padx=(0, 5), sticky=(tk.W, tk.E))
+
+        # Cancel Button (initially hidden)
+        self.cancel_button = tk.Button(buttons_frame, text="❌ CANCEL",
+                                       bg='#ffcccc', fg='black', font=('Arial', 12, 'bold'),
+                                       relief='raised', bd=3, pady=10,
+                                       activebackground='#ffaaaa', activeforeground='black',
+                                       command=self.cancel_translation)
 
     def _create_status_bar(self, parent):
         """Create status bar"""
@@ -356,8 +392,56 @@ class DragDropGUI:
             self.expand_settings_button.config(text="▼ Settings")
             self.settings_expanded.set(True)
 
+    def show_cancel_button(self):
+        """Show cancel button and hide translate button"""
+        self.translate_button.grid_forget()
+        self.cancel_button.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E))
+
+    def show_translate_button(self):
+        """Show translate button and hide cancel button"""
+        self.cancel_button.grid_forget()
+        self.translate_button.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E))
+
+    def cancel_translation(self):
+        """Cancel the current translation process"""
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.log_to_console("🛑 Cancelling processing...")
+            self.cancel_event.set()
+
+            # Show cancellation status
+            self.status_var.set("Cancelling...")
+
+            # Wait for thread to finish (max 5 seconds)
+            self.processing_thread.join(timeout=5.0)
+
+            if self.processing_thread.is_alive():
+                self.log_to_console("⚠️ Force terminating process...")
+                # If thread is still running, mark as terminated
+
+            self.log_to_console("✅ Processing has been cancelled")
+            self.status_var.set("Cancelled")
+
+            # Restore translate button
+            self.show_translate_button()
+        else:
+            self.log_to_console("ℹ️ No active processing to cancel")
+
     def on_closing(self):
         """Handle window closing event"""
+        if self.processing_thread and self.processing_thread.is_alive():
+            if messagebox.askyesno("Cancel processing",
+                                   "Processing subtitles...\n"
+                                   "Do you want to stop?"):
+                self.log_to_console("🛑 Cancelling processing...")
+                self.cancel_event.set()
+
+                self.processing_thread.join(timeout=3.0)
+
+                if self.processing_thread.is_alive():
+                    self.log_to_console("⚠️ Force close...")
+            else:
+                return
+
         self.save_current_config()
         self.log_to_console("💾 Configuration saved")
         self.root.after(100, self.root.destroy)
@@ -782,7 +866,7 @@ class DragDropGUI:
                 self.log_to_console(f"🎭 Extracted: '{primary_file.name}' → Title: '{title}', Year: '{year_display}'")
             else:
                 title = "Unknown Movie"
-                year_display = ""
+                year_display = "11"
 
             item_text = f"☑️ Pair {i + 1}"
 
@@ -904,6 +988,7 @@ class DragDropGUI:
 
     def _run_translation_async(self, valid_pairs):
         """Run translation in separate thread"""
+
         def run_translation():
             try:
                 self.status_var.set("Processing...")
@@ -938,26 +1023,41 @@ class DragDropGUI:
                     'extract_audio': self.extract_audio.get(),
                     'overview': self.overview.get() if hasattr(self, 'overview') else '',
                     'movie_title': self._get_movie_title_from_treeview(),
-                    'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False
+                    'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
+                    'cancel_event': self.cancel_event  # Przekaż event do CLI runner
                 }
 
                 # Run translation using CLI runner
                 success = self.cli_runner.run_translation_batch(full_path_pairs, config)
 
-                if success:
-                    self.status_var.set("Processing completed successfully")
+                # Sprawdź czy zostało anulowane
+                if self.cancel_event.is_set():
+                    self.root.after(0, lambda: self.status_var.set("Anulowano"))
+                    self.root.after(0, lambda: self.log_to_console("🛑 Przetwarzanie zostało anulowane"))
+                elif success:
+                    self.root.after(0, lambda: self.status_var.set("Processing completed successfully"))
                 else:
-                    self.status_var.set("Processing completed with errors")
+                    self.root.after(0, lambda: self.status_var.set("Processing completed with errors"))
 
             except Exception as e:
                 error_msg = f"Error during processing: {e}"
-                self.log_to_console(error_msg)
-                self.status_var.set("Processing error")
-                messagebox.showerror("Error", error_msg)
+                self.root.after(0, lambda: self.log_to_console(error_msg))
+                self.root.after(0, lambda: self.status_var.set("Processing error"))
+            finally:
+                # Zawsze przywróć przycisk tłumaczenia
+                self.root.after(0, self.show_translate_button)
+                # Zresetuj cancel event
+                self.cancel_event.clear()
+
+        # Pokaż przycisk anulowania
+        self.show_cancel_button()
+
+        # Reset cancel event przed rozpoczęciem
+        self.cancel_event.clear()
 
         # Run in separate thread
-        thread = threading.Thread(target=run_translation, daemon=True)
-        thread.start()
+        self.processing_thread = threading.Thread(target=run_translation, daemon=True)
+        self.processing_thread.start()
 
     def fetch_tmdb_info(self):
         """Fetch TMDB info using the TMDB ID in the field"""
@@ -1170,7 +1270,7 @@ class DragDropGUI:
                     return
 
                 # Search for movie
-                movie = tmdb.find_best_match(title, year)
+                movie = tmdb.find_best_match(title, is_series=self.is_tv_series.get(), year=year)
 
                 if movie:
                     # Update the TMDB ID field in the main thread

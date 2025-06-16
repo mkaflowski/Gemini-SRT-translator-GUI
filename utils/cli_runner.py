@@ -11,9 +11,11 @@ from pathlib import Path
 class CLIRunner:
     """Handles execution of CLI commands with real-time output"""
 
+
     def __init__(self, logger=None):
         self.logger = logger
         self.gst_cmd = self._find_gst_command()
+
 
     def _find_gst_command(self):
         """Find the gst command executable"""
@@ -73,20 +75,33 @@ class CLIRunner:
 
         success_count = 0
         total_count = len(file_pairs)
+        cancel_event = config.get('cancel_event')
 
         for i, pair in enumerate(file_pairs, 1):
+            # Sprawdź czy została wysłana komenda anulowania
+            if cancel_event and cancel_event.is_set():
+                self.log(f"🛑 Anulowanie przetwarzania na parze {i}/{total_count}")
+                break
+
             self.log(f"🔄 Processing pair {i}/{total_count}:")
 
             success = self._run_single_translation(pair, config, i)
             if success:
                 success_count += 1
+            elif cancel_event and cancel_event.is_set():
+                # Jeśli nie udało się z powodu anulowania
+                break
 
             self.log("─" * 30)
 
-        self.log(f"🎉 Processing completed!")
-        self.log(f"✅ Successful: {success_count}/{total_count}")
-
-        return success_count == total_count
+        if cancel_event and cancel_event.is_set():
+            self.log(f"🛑 Przetwarzanie anulowane!")
+            self.log(f"✅ Przetworzone przed anulowaniem: {success_count}/{i - 1}")
+            return False
+        else:
+            self.log(f"🎉 Processing completed!")
+            self.log(f"✅ Successful: {success_count}/{total_count}")
+            return success_count == total_count
 
     def _run_single_translation(self, pair, config, pair_number):
         """
@@ -100,6 +115,13 @@ class CLIRunner:
         Returns:
             bool: True if successful, False otherwise
         """
+        cancel_event = config.get('cancel_event')
+
+        # Sprawdź anulowanie przed rozpoczęciem
+        if cancel_event and cancel_event.is_set():
+            self.log(f"🛑 Anulowanie przed przetwarzaniem pary {pair_number}")
+            return False
+
         subtitle_file = pair.get('subtitle')
         video_file = pair.get('video')
 
@@ -118,8 +140,8 @@ class CLIRunner:
             self.log(f"❌ Failed to build command for pair {pair_number}")
             return False
 
-        # Execute command
-        return self._execute_command(cmd, pair_number)
+        # Execute command z obsługą anulowania
+        return self._execute_command(cmd, pair_number, cancel_event)
 
     def _get_language_code(self, language):
         """Convert language name to short code"""
@@ -313,7 +335,7 @@ class CLIRunner:
 
         return cmd
 
-    def _execute_command(self, cmd, pair_number):
+    def _execute_command(self, cmd, pair_number, cancel_event=None):
         """Execute a command and stream its output"""
         try:
             self.log(f"Executing: {' '.join(cmd)}")
@@ -328,14 +350,43 @@ class CLIRunner:
                 universal_newlines=True
             )
 
-            # Read output in real-time
-            for line in process.stdout:
-                output_line = line.rstrip()
-                if output_line:  # Only log non-empty lines
-                    self.log(f"   {output_line}")
+            # Read output in real-time z sprawdzaniem anulowania
+            while True:
+                # Sprawdź czy należy anulować
+                if cancel_event and cancel_event.is_set():
+                    self.log(f"🛑 Anulowanie procesu dla pary {pair_number}")
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        self.log(f"⚠️ Wymuszenie zabicia procesu dla pary {pair_number}")
+                        process.kill()
+                        process.wait()
+                    return False
 
-            # Wait for completion
-            return_code = process.wait()
+                # Czytaj linię z timeout
+                try:
+                    line = process.stdout.readline()
+                    if not line:
+                        break
+
+                    output_line = line.rstrip()
+                    if output_line:  # Only log non-empty lines
+                        self.log(f"   {output_line}")
+
+                except Exception as e:
+                    self.log(f"   Error reading output: {e}")
+                    break
+
+            # Wait for completion (with timeout for cancellation)
+            try:
+                return_code = process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                if cancel_event and cancel_event.is_set():
+                    process.terminate()
+                    return_code = process.wait()
+                else:
+                    return_code = process.wait()
 
             if return_code == 0:
                 self.log(f"✅ Pair {pair_number} processed successfully")

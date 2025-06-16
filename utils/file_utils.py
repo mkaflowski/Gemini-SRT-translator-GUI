@@ -8,48 +8,36 @@ from pathlib import Path
 
 
 def extract_movie_info(filename):
-    """Extract movie name and year from filename using regex patterns"""
+    """Extract movie name and year from filename - simplified version"""
     if not filename:
         return "Unknown Movie", None
 
     # Remove file extension
     name_without_ext = Path(filename).stem
 
-    # Common patterns to clean up filename
-    # Remove common patterns like [codec], (group), {quality}, etc.
-    clean_name = re.sub(r'[\[\({].*?[\]\)}]', '', name_without_ext)
+    # Replace dots, underscores, and dashes with spaces first
+    clean_name = re.sub(r'[._-]+', ' ', name_without_ext)
 
-    # Remove common words and patterns
-    clean_patterns = [
-        r'\b(BluRay|BDRip|DVDRip|WEBRip|HDRip|CAMRip|TS|TC|SCR|R5|R6)\b',
-        r'\b(720p|1080p|2160p|4K|HD|FHD|UHD)\b',
-        r'\b(x264|x265|H\.?264|H\.?265|HEVC|AVC)\b',
-        r'\b(AAC|AC3|DTS|MP3|FLAC)\b',
-        r'\b(EXTENDED|UNRATED|DIRECTORS?\.?CUT|REMASTERED)\b',
-        r'\b(PROPER|REPACK|INTERNAL|LIMITED|FESTIVAL)\b',
-        r'\b\d+MB\b|\b\d+GB\b',  # File sizes
-        r'\b[A-Z]{2,}$',  # Release groups at the end
-    ]
+    # Find year (4 digits: 19xx or 20xx) or season pattern (S01, S11, etc.)
+    cutoff_match = re.search(r'(19|20)\d{2}|S\d{2}', clean_name, re.IGNORECASE)
 
-    for pattern in clean_patterns:
-        clean_name = re.sub(pattern, '', clean_name, flags=re.IGNORECASE)
+    if cutoff_match:
+        # Cut everything before the match
+        movie_name = clean_name[:cutoff_match.start()].strip()
 
-    # Replace dots, underscores, and dashes with spaces
-    clean_name = re.sub(r'[._-]+', ' ', clean_name)
-
-    # Extract year (4 digits, typically 19xx or 20xx)
-    year_match = re.search(r'\b(19|20)\d{2}\b', clean_name)
-    year = year_match.group() if year_match else None
-
-    # Remove year from movie name if found
-    if year:
-        movie_name = re.sub(r'\b' + re.escape(year) + r'\b', '', clean_name)
+        # Extract year if it was a year match (not season)
+        year_match = re.match(r'(19|20)\d{2}', cutoff_match.group())
+        year = year_match.group() if year_match else None
     else:
-        movie_name = clean_name
+        # No year or season found, use the whole cleaned name
+        movie_name = clean_name.strip()
+        year = None
 
-    # Clean up extra whitespace and common remaining artifacts
+    # Clean up extra whitespace
     movie_name = re.sub(r'\s+', ' ', movie_name).strip()
-    movie_name = re.sub(r'^[.\-_\s]+|[.\-_\s]+$', '', movie_name)
+
+    # Remove trailing "(" and strip again
+    movie_name = movie_name.rstrip('(').strip()
 
     # If movie name is empty or too short, use original filename
     if not movie_name or len(movie_name) < 2:
