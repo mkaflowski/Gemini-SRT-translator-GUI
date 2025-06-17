@@ -3,8 +3,10 @@ CLI command runner for executing gst translation commands.
 Handles process management and output streaming.
 """
 import datetime
+import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 import srt
@@ -389,26 +391,34 @@ class CLIRunner:
         try:
             self.log(f"Executing: {' '.join(cmd)}")
 
-            # Start process
+            # Set environment variables for the subprocess
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            env['PYTHONUTF8'] = '1'
+
+            # Start process with explicit encoding
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 bufsize=1,
-                universal_newlines=True
+                universal_newlines=True,
+                env=env
             )
 
-            # Read output in real-time z sprawdzaniem anulowania
+            # Read output in real-time with cancellation checking
             while True:
-                # Sprawdź czy należy anulować
+                # Check for cancellation
                 if cancel_event and cancel_event.is_set():
-                    self.log(f"🛑 Anulowanie procesu dla pary {pair_number}")
+                    self.log(f"🛑 Canceling process for pair {pair_number}")
                     process.terminate()
                     try:
                         process.wait(timeout=3)
                     except subprocess.TimeoutExpired:
-                        self.log(f"⚠️ Wymuszenie zabicia procesu dla pary {pair_number}")
+                        self.log(f"⚠️ Force killing process for pair {pair_number}")
                         process.kill()
                         process.wait()
                     return False
@@ -422,6 +432,9 @@ class CLIRunner:
                     if output_line:  # Only log non-empty lines
                         self.log(f"   {output_line}")
 
+                except UnicodeDecodeError as e:
+                    self.log(f"   Unicode decode error: {e}")
+                    continue
                 except Exception as e:
                     self.log(f"   Error reading output: {e}")
                     break
@@ -444,8 +457,17 @@ class CLIRunner:
                 return False
 
         except Exception as e:
+            print(traceback.format_exc())
             self.log(f"❌ Error executing command for pair {pair_number}: {e}")
             return False
+
+    def safe_subprocess_run(*args, **kwargs):
+        """Wrapper for subprocess calls with proper encoding"""
+        if 'encoding' not in kwargs:
+            kwargs['encoding'] = 'utf-8'
+        if 'errors' not in kwargs:
+            kwargs['errors'] = 'replace'
+        return subprocess.run(*args, **kwargs)
 
     def run_legacy_command(self, path, is_file=True):
         """
@@ -513,8 +535,8 @@ class CLIRunner:
                     self.logger(f"❌ SRT file not found: {dest_srt_file}")
                 return
 
-            # Load the SRT content
-            with open(dest_srt_file, "r", encoding="utf-8") as f:
+            # Load the SRT content with explicit UTF-8 encoding
+            with open(dest_srt_file, "r", encoding="utf-8", errors='ignore') as f:
                 srt_content = f.read()
 
             # Parse subtitles
@@ -548,8 +570,8 @@ class CLIRunner:
             # Re-index and sort
             subtitles = list(srt.sort_and_reindex(subtitles))
 
-            # Write back to file
-            with open(dest_srt_file, "w", encoding="utf-8") as f:
+            # Write back to file with explicit UTF-8 encoding
+            with open(dest_srt_file, "w", encoding="utf-8", errors='replace') as f:
                 f.write(srt.compose(subtitles))
 
             if self.logger:
@@ -558,3 +580,7 @@ class CLIRunner:
         except Exception as e:
             if self.logger:
                 self.logger(f"❌ Error adding translator info: {e}")
+                # Log more details about the encoding error
+                if 'charmap' in str(e):
+                    self.logger("💡 Hint: This appears to be a Unicode encoding issue on Windows")
+                    self.logger("💡 Try setting PYTHONIOENCODING=utf-8 environment variable")

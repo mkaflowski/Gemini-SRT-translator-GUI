@@ -211,5 +211,17 @@ def main():
 
 
 if __name__ == "__main__":
+    if sys.platform.startswith('win'):
+        # Try to set UTF-8 encoding for console output
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except AttributeError:
+            # For older Python versions
+            import codecs
+
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'replace')
+            sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'replace')
+
     exit_code = main()
     sys.exit(exit_code)

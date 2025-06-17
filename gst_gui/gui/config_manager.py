@@ -85,6 +85,7 @@ class ConfigManager:
             'language': self.get('language', 'Polish'),
             'extract_audio': self.get('extract_audio', False),
             'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True),
+            'language_code': self.get('language_code', True),
             'tmdb_id': self.get('tmdb_id', '')
         }
 
