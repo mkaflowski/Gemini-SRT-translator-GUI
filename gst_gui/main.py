@@ -47,24 +47,6 @@ def check_external_dependencies():
     return warnings
 
 
-def check_file_structure():
-    """Check if the modular file structure exists"""
-    structure_issues = []
-    required_files = [
-        'gui/__init__.py',
-        'gui/config_manager.py',
-        'utils/__init__.py',
-        'utils/file_utils.py',
-        'utils/cli_runner.py'
-    ]
-
-    for file_path in required_files:
-        if not Path(file_path).exists():
-            structure_issues.append(f"Missing file: {file_path}")
-
-    return structure_issues
-
-
 def test_imports():
     """Test if all modules can be imported"""
     import_issues = []
@@ -163,15 +145,6 @@ def main():
             print(f"   • {warning}")
         print()
 
-    # Check file structure
-    structure_issues = check_file_structure()
-    if structure_issues:
-        print("⚠️  File Structure Issues:")
-        for issue in structure_issues:
-            print(f"   • {issue}")
-        print("   💡 Run 'python migrate.py' to set up the modular structure")
-        print()
-
     # Test imports
     import_issues = test_imports()
     if import_issues:
@@ -191,14 +164,13 @@ def main():
         print("   3. Check that all files are in the correct locations")
         return 1
 
-    print(f"✅ Found GUI class from: {import_source}")
-
     try:
         # Create root window
         root = tk.Tk()
 
         # macOS-specific setup
-        setup_macos_focus()
+        if sys.platform == "darwin":
+            setup_macos_focus()
 
         # Create application
         print("🎨 Creating GUI application...")

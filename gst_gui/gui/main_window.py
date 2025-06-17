@@ -532,7 +532,8 @@ class DragDropGUI:
         """Additional security to ensure window is in front"""
         try:
             # For macOS - try AppleScript
-            os.system('''/usr/bin/osascript -e 'tell app "Finder" to set frontmost of process "Python" to true' ''')
+            if sys.platform == "darwin":
+                os.system('''/usr/bin/osascript -e 'tell app "Finder" to set frontmost of process "Python" to true' ''')
         except:
             pass
 
