@@ -36,7 +36,7 @@ gst_gui
 ### Prerequisites
 - Python 3.8 or higher
 - Google Gemini API key (https://aistudio.google.com/apikey)
-- TMDB API key (optional, for movie context)
+- TMDB API key (optional, for movie context - https://www.themoviedb.org/settings/api)
 
 ## 🚀 Usage
 
