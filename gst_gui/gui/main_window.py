@@ -2,7 +2,7 @@
 Main window class for the CLI Wrapper GUI application.
 Coordinates between UI components, file processing, and configuration.
 """
-
+import re
 import tkinter as tk
 from io import BytesIO
 from tkinter import ttk, messagebox, scrolledtext
@@ -653,11 +653,76 @@ class DragDropGUI:
             self.log_to_console("Unknown item type")
             messagebox.showwarning("Warning", "Unknown item type")
 
+    def _detect_tv_series_pattern(self, filename):
+        """
+        Detect if filename contains TV series patterns like S01E01, S12E03, etc.
+        Returns True if TV series pattern is found, False otherwise.
+        """
+        if not filename:
+            return False
+
+        # Convert to lowercase for case-insensitive matching
+        filename_lower = filename.lower()
+
+        # Common TV series patterns
+        tv_patterns = [
+            r's\d{1,2}e\d{1,2}',  # S01E01, S12E03, S1E1, etc.
+            r'season\s*\d+',  # Season 1, Season 12, etc.
+            r'episode\s*\d+',  # Episode 1, Episode 12, etc.
+            r'\d{1,2}x\d{1,2}',  # 1x01, 12x03, etc.
+        ]
+
+        # Check each pattern
+        for pattern in tv_patterns:
+            if re.search(pattern, filename_lower):
+                return True
+
+        return False
+
+    def _auto_detect_and_set_tv_series(self, files_to_check):
+        """
+        Check files for TV series patterns and automatically set TV Series checkbox.
+        files_to_check can be a list of filenames or file paths.
+        """
+        tv_series_detected = False
+        detected_patterns = []
+
+        # Check each file for TV series patterns
+        for file_item in files_to_check:
+            # Handle both Path objects and strings
+            filename = file_item.name if hasattr(file_item, 'name') else str(file_item)
+
+            if self._detect_tv_series_pattern(filename):
+                tv_series_detected = True
+                # Extract the pattern that was found for logging
+                filename_lower = filename.lower()
+                for pattern in [r's\d{1,2}e\d{1,2}', r'season\s*\d+', r'episode\s*\d+', r'\d{1,2}x\d{1,2}']:
+                    match = re.search(pattern, filename_lower)
+                    if match:
+                        detected_patterns.append(match.group())
+                        break
+
+        # If TV series pattern detected, enable checkbox and log
+        if tv_series_detected:
+            self.is_tv_series.set(True)
+            patterns_text = ", ".join(set(detected_patterns))  # Remove duplicates
+            self.log_to_console(f"📺 TV Series detected! Found patterns: {patterns_text}")
+            self.log_to_console("✅ Automatically enabled 'TV Series' checkbox")
+            return True
+        else:
+            # Reset to movie mode if no TV patterns found
+            self.is_tv_series.set(False)
+            self.log_to_console("🎬 No TV series patterns detected - set to Movie mode")
+            return False
+
     def _process_single_file(self, file_path):
         """Process a single file"""
         self.log_to_console("File detected")
         self.clear_treeview()
         self.current_folder_path = file_path.parent
+
+        # Auto-detect TV series from single file
+        self._auto_detect_and_set_tv_series([file_path])
 
         # Add single file to TreeView
         file_type = classify_file_type(file_path)
@@ -694,6 +759,15 @@ class DragDropGUI:
         """Process a folder"""
         self.log_to_console("Folder detected - scanning contents...")
         found_files = scan_folder_for_files(folder_path)
+
+        # Collect all files for TV series detection
+        all_files = []
+        for file_type, files in found_files.items():
+            all_files.extend(files)
+
+        # Auto-detect TV series from all files in folder
+        self._auto_detect_and_set_tv_series(all_files)
+
         self.add_subtitle_matches_to_treeview(found_files, folder_path)
 
         # Auto-fetch TMDB ID after adding files to TreeView (with small delay to ensure UI is updated)
@@ -957,6 +1031,9 @@ class DragDropGUI:
 
     def start_translation(self):
         """Start translation process with selected pairs"""
+        # Hide dropdown menus when starting translation
+        self._hide_dropdown_menus()
+
         # Debug: check what's in TreeView
         self.log_to_console("🔍 Debug - checking TreeView...")
         total_items = len(self.tree.get_children())
@@ -992,6 +1069,20 @@ class DragDropGUI:
         if self._confirm_translation(valid_pairs, len(selected_pairs)):
             self.save_current_config()
             self._run_translation_async(valid_pairs)
+
+    def _hide_dropdown_menus(self):
+        """Hide both API and Settings dropdown menus"""
+        # Hide API options if expanded
+        if self.api_expanded.get():
+            self.api_options_frame.grid_forget()
+            self.expand_api_button.config(text="▶ Show API options")
+            self.api_expanded.set(False)
+
+        # Hide Settings options if expanded
+        if self.settings_expanded.get():
+            self.settings_options_frame.grid_forget()
+            self.expand_settings_button.config(text="▶ Settings")
+            self.settings_expanded.set(False)
 
     def _filter_valid_pairs(self, selected_pairs):
         """Filter pairs based on current settings"""
