@@ -70,7 +70,7 @@ class DragDropGUI:
         # Enhanced icon loading with multiple fallback paths
         self._load_window_icon()
 
-        window_width = 1300
+        window_width = 1200
         window_height = 900
 
         self.root.geometry(f"{window_width}x{window_height}")
@@ -174,18 +174,18 @@ class DragDropGUI:
         return icon_loaded
 
     def _setup_ui(self):
-        """Setup the user interface with scrollable content"""
-        # Create a scrollable frame that contains everything
+        """Setup the user interface with hidden scrollbar when not needed"""
+        # Create a scrollable frame with default styling
         self.scrollable_frame = ctk.CTkScrollableFrame(
             self.root,
-            width=1160,  # Slightly smaller than window to account for scrollbar
+            width=1160,  # Slightly smaller than window
             height=860,  # Slightly smaller than window
             corner_radius=0,
             fg_color="transparent"  # Make it blend with the background
         )
         self.scrollable_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-        # Now use scrollable_frame as the main container instead of main_frame
+        # Use scrollable_frame as the main container
         self.main_frame = self.scrollable_frame
 
         # Create UI components (they'll now be inside the scrollable frame)
@@ -195,6 +195,11 @@ class DragDropGUI:
         self._create_config_sections()
         self._create_action_buttons()
         self._create_status_bar()
+
+        # Hide scrollbar by default on startup
+        self.root.after(100, self._hide_scrollbar_initially)
+        # Then start monitoring for when it's needed
+        self.root.after(500, self._manage_scrollbar_visibility)
 
     def _create_drop_area(self):
         """Create the drag & drop area"""
@@ -612,6 +617,62 @@ class DragDropGUI:
         )
         self.status_bar.pack(fill="x", pady=(0, 5))  # Reduced from (0, 10) to (0, 5)
 
+    def _hide_scrollbar_initially(self):
+        """Hide scrollbar on app startup for a clean initial appearance"""
+        try:
+            # Access and hide the scrollbar immediately on startup
+            if hasattr(self.scrollable_frame, '_scrollbar'):
+                scrollbar = self.scrollable_frame._scrollbar
+                if scrollbar:
+                    scrollbar.grid_remove()  # Hide scrollbar by default
+                    print("🎨 Scrollbar hidden on startup for clean appearance")
+        except Exception as e:
+            # If we can't hide it, that's okay - it will still work normally
+            pass
+
+    def _manage_scrollbar_visibility(self):
+        """Hide/show scrollbar based on content height"""
+        try:
+            # Update layout to get accurate measurements
+            self.root.update_idletasks()
+
+            # Access the internal scrollbar of CTkScrollableFrame
+            if hasattr(self.scrollable_frame, '_scrollbar'):
+                scrollbar = self.scrollable_frame._scrollbar
+
+                # Get the internal canvas
+                if hasattr(self.scrollable_frame, '_parent_canvas'):
+                    canvas = self.scrollable_frame._parent_canvas
+                    canvas.update_idletasks()
+
+                    # Get canvas dimensions
+                    canvas_height = canvas.winfo_height()
+
+                    # Get scrollable region
+                    scroll_region = canvas.cget("scrollregion")
+                    if scroll_region:
+                        # Parse scroll region (format: "x1 y1 x2 y2")
+                        coords = scroll_region.split()
+                        if len(coords) >= 4:
+                            content_height = float(coords[3])
+
+                            # Check if scrolling is needed (with small buffer)
+                            if content_height > canvas_height + 10:  # 10px buffer
+                                # Content exceeds canvas - show scrollbar
+                                if scrollbar:
+                                    scrollbar.grid()  # Make it visible
+                            else:
+                                # Content fits - hide scrollbar
+                                if scrollbar:
+                                    scrollbar.grid_remove()  # Keep it hidden
+
+        except Exception as e:
+            # If there's an error accessing internals, just leave scrollbar as-is
+            pass
+
+        # Check again after a delay
+        self.root.after(2000, self._manage_scrollbar_visibility)  # Check every 2 seconds
+
     def toggle_api_section(self):
         """Toggle the visibility of API configuration section"""
         if self.api_expanded.get():
@@ -625,6 +686,9 @@ class DragDropGUI:
             self.expand_api_button.configure(text="▼ Hide API options")
             self.api_expanded.set(True)
 
+        # Update scrollbar visibility after layout change
+        self.root.after(100, self._manage_scrollbar_visibility)
+
     def toggle_settings_section(self):
         """Toggle the visibility of Settings section"""
         if self.settings_expanded.get():
@@ -637,6 +701,9 @@ class DragDropGUI:
             self.settings_options_frame.pack(fill="x", padx=10, pady=(5, 0))
             self.expand_settings_button.configure(text="▼ Settings")
             self.settings_expanded.set(True)
+
+        # Update scrollbar visibility after layout change
+        self.root.after(100, self._manage_scrollbar_visibility)
 
     def show_cancel_button(self):
         """Show cancel button and hide translate button"""
