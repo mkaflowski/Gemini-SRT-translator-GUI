@@ -354,7 +354,14 @@ class CLIRunner:
         if overview and movie_title:
             # Format description with content type and title
             content_type = "TV series" if is_tv_series else "movie"
-            description = f"If a line has a comma or multiple sentences, try to keep one line to about 40-50 characters. If a line has a talk of 2 people try to split it into 2 lines. It is a {content_type} called {movie_title}. Description: {overview}"
+            translation_prompt = """When translating text, follow these formatting rules:
+            1. Line length: Keep lines to 40-50 characters when possible, breaking at natural phrase boundaries or punctuation marks.
+            2. Dialogue formatting: When text contains dialogue between multiple speakers, format each speaker's lines separately, starting each with a dash (-).
+            3. Spacing: Ensure proper spacing between words and after punctuation marks.
+            4. Sentence breaks: If a sentence continues on the next line, maintain proper spacing between the end of one line and the beginning of the next.
+            """
+
+            description = f"{translation_prompt} It is a {content_type} called {movie_title}. Description: {overview}"
             cmd.extend(['--description', description])
             self.log(f"   📄 Description: It is a {content_type} called {movie_title}...")
         elif overview:
