@@ -70,7 +70,7 @@ class DragDropGUI:
         # Enhanced icon loading with multiple fallback paths
         self._load_window_icon()
 
-        window_width = 1200
+        window_width = 1300
         window_height = 900
 
         self.root.geometry(f"{window_width}x{window_height}")
@@ -174,12 +174,21 @@ class DragDropGUI:
         return icon_loaded
 
     def _setup_ui(self):
-        """Setup the user interface"""
-        # Main frame using CustomTkinter
-        self.main_frame = ctk.CTkFrame(self.root)
-        self.main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        """Setup the user interface with scrollable content"""
+        # Create a scrollable frame that contains everything
+        self.scrollable_frame = ctk.CTkScrollableFrame(
+            self.root,
+            width=1160,  # Slightly smaller than window to account for scrollbar
+            height=860,  # Slightly smaller than window
+            corner_radius=0,
+            fg_color="transparent"  # Make it blend with the background
+        )
+        self.scrollable_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-        # Create UI components
+        # Now use scrollable_frame as the main container instead of main_frame
+        self.main_frame = self.scrollable_frame
+
+        # Create UI components (they'll now be inside the scrollable frame)
         self._create_drop_area()
         self._create_treeview()
         self._create_console()
