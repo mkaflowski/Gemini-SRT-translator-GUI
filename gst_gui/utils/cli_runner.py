@@ -354,7 +354,7 @@ class CLIRunner:
         if overview and movie_title:
             # Format description with content type and title
             content_type = "TV series" if is_tv_series else "movie"
-            description = f"If a line has a comma or multiple sentences, try to keep one line to about 40-50 characters. It is a {content_type} called {movie_title}. Description: {overview}"
+            description = f"If a line has a comma or multiple sentences, try to keep one line to about 40-50 characters. If a line has a talk of 2 people try to split it into 2 lines. It is a {content_type} called {movie_title}. Description: {overview}"
             cmd.extend(['--description', description])
             self.log(f"   📄 Description: It is a {content_type} called {movie_title}...")
         elif overview:
