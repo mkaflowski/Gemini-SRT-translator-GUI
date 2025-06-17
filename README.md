@@ -32,6 +32,10 @@ A powerful GUI application for translating SRT subtitle files using Google's Gem
 pip install git+https://github.com/mkaflowski/Gemini-SRT-translator-GUI.git
 gst_gui
 ```
+For update use:
+```bash
+pip install --upgrade git+https://github.com/mkaflowski/Gemini-SRT-translator-GUI.git
+```
 
 ### Prerequisites
 - Python 3.8 or higher
@@ -64,7 +68,6 @@ gst_gui
 ## 🧩 To Do
 
 -  Getting description for each episode from TMDB
--  Auto detecting Movie / TV Show
 
 ## 🔗 Related Projects
 
