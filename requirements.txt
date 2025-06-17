@@ -3,3 +3,4 @@ Pillow>=9.0.0
 requests>=2.25.0
 srt>=3.5.0
 tkinterdnd2>=0.3.0
+customtkinter>=5.2.2

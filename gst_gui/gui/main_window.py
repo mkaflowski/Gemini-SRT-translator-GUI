@@ -5,7 +5,8 @@ Coordinates between UI components, file processing, and configuration.
 import re
 import tkinter as tk
 from io import BytesIO
-from tkinter import ttk, messagebox, scrolledtext
+import customtkinter as ctk
+from tkinter import messagebox, scrolledtext
 import threading
 from pathlib import Path
 import os
@@ -48,24 +49,31 @@ class DragDropGUI:
     """Main GUI class that coordinates all components"""
 
     def __init__(self, root):
-        self.root = root
+        # Set CustomTkinter appearance before doing anything else
+        ctk.set_appearance_mode("dark")  # Modes: "System" (default), "Dark", "Light"
+        ctk.set_default_color_theme("blue")  # Themes: "blue" (default), "green", "dark-blue"
+
+        # Convert root to CTk if it's not already
+        if not isinstance(root, ctk.CTk):
+            # If root is a regular tkinter window, we need to handle this differently
+            self.root = root
+            # Configure the tkinter root to have dark colors
+            root.configure(bg='#212121')
+        else:
+            self.root = root
+
         self.root.title("Gemini SRT Translator")
         self.processing_thread = None
         self.cancel_event = threading.Event()
         self.image_label = None
 
-        icon_path = (Path(__file__).resolve().parent / "../../gst_gui/assets/icon.png").resolve()
-        try:
-            icon = tk.PhotoImage(file=str(icon_path))
-            self.root.iconphoto(False, icon)
-        except Exception as e:
-            print(f"Failed to load icon: {e}")
+        # Enhanced icon loading with multiple fallback paths
+        self._load_window_icon()
 
-        window_width = 1000
-        window_height = 800
+        window_width = 1200
+        window_height = 900
 
         self.root.geometry(f"{window_width}x{window_height}")
-        self.root.configure(bg='#f0f0f0')
 
         # Get screen dimensions
         screen_width = self.root.winfo_screenwidth()
@@ -108,61 +116,122 @@ class DragDropGUI:
         # Log configuration after UI is ready
         self.root.after(200, self.log_config_loaded)
 
+    def _load_window_icon(self):
+        """Load window icon with multiple fallback paths"""
+        # List of possible icon paths to try
+        possible_paths = [
+            # Original path from your code
+            Path(__file__).resolve().parent / "../../gst_gui/assets/icon.png",
+            # Alternative paths
+            Path(__file__).resolve().parent / "../assets/icon.png",
+            Path(__file__).resolve().parent.parent / "assets/icon.png",
+            Path(__file__).resolve().parent / "assets/icon.png",
+            # Current directory
+            Path("icon.png"),
+            Path("assets/icon.png"),
+            Path("gst_gui/assets/icon.png"),
+            # Common icon names
+            Path("app_icon.png"),
+            Path("logo.png")
+        ]
+
+        icon_loaded = False
+
+        for icon_path in possible_paths:
+            try:
+                if icon_path.exists():
+                    # Try different methods to load the icon
+                    try:
+                        # Method 1: Standard PhotoImage
+                        icon = tk.PhotoImage(file=str(icon_path))
+                        self.root.iconphoto(False, icon)
+                        print(f"✅ Icon loaded from: {icon_path}")
+                        icon_loaded = True
+                        break
+                    except Exception as e1:
+                        try:
+                            # Method 2: For CustomTkinter, try wm_iconbitmap (Windows)
+                            if hasattr(self.root, 'wm_iconbitmap'):
+                                # Convert PNG to ICO if needed (Windows only)
+                                if str(icon_path).endswith('.png'):
+                                    continue  # Skip PNG for iconbitmap
+                                self.root.wm_iconbitmap(str(icon_path))
+                                print(f"✅ Icon loaded via iconbitmap from: {icon_path}")
+                                icon_loaded = True
+                                break
+                        except Exception as e2:
+                            print(f"⚠️ Failed to load icon from {icon_path}: {e1}")
+                            continue
+            except Exception as e:
+                continue
+
+        if not icon_loaded:
+            print("ℹ️ No icon file found - using default window icon")
+            print("💡 To add an icon, place 'icon.png' in one of these locations:")
+            for path in possible_paths[:5]:  # Show first 5 paths
+                print(f"   • {path}")
+
+        return icon_loaded
+
     def _setup_ui(self):
         """Setup the user interface"""
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding="20")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-        # Grid configuration
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(2, weight=1)  # TreeView row
-        main_frame.rowconfigure(4, weight=1)  # Console row
+        # Main frame using CustomTkinter
+        self.main_frame = ctk.CTkFrame(self.root)
+        self.main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Create UI components
-        self._create_drop_area(main_frame)
-        self._create_treeview(main_frame)
-        self._create_console(main_frame)
-        self._create_config_sections(main_frame)
-        self._create_action_buttons(main_frame)
-        self._create_status_bar(main_frame)
+        self._create_drop_area()
+        self._create_treeview()
+        self._create_console()
+        self._create_config_sections()
+        self._create_action_buttons()
+        self._create_status_bar()
 
-    def _create_drop_area(self, parent):
+    def _create_drop_area(self):
         """Create the drag & drop area"""
-        # Drag & drop area
-        self.drop_frame = tk.Frame(parent, bg='#e8e8e8', relief='ridge', bd=2)
-        self.drop_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 20))
-        self.drop_frame.columnconfigure(0, weight=1)
+        # Drag & drop area using CustomTkinter frame
+        self.drop_frame = ctk.CTkFrame(self.main_frame, height=120, corner_radius=10)
+        self.drop_frame.pack(fill="x", pady=(0, 20))
+        self.drop_frame.pack_propagate(False)
 
         # Label in drop area
-        self.drop_label = tk.Label(self.drop_frame,
-                                   text="📁 Drag files or folders here\n\nOr click to browse",
-                                   bg='#e8e8e8', fg='#666666',
-                                   font=('Arial', 10), pady=40)
-        self.drop_label.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        self.drop_label = ctk.CTkLabel(
+            self.drop_frame,
+            text="📁 Drag files or folders here\n\nOr click to browse",
+            font=ctk.CTkFont(size=14),
+            text_color=("gray60", "gray40")
+        )
+        self.drop_label.pack(expand=True)
 
         # Bind click to file selection
         self.drop_label.bind("<Button-1>", self.browse_file)
         self.drop_frame.bind("<Button-1>", self.browse_file)
 
-    def _create_treeview(self, parent):
+    def _create_treeview(self):
         """Create the TreeView for file pairs"""
-        # TreeView section
-        treeview_label = ttk.Label(parent, text="Found files:")
-        treeview_label.grid(row=1, column=0, sticky=tk.W, pady=(0, 5))
+        # TreeView section label with reduced margins
+        treeview_label = ctk.CTkLabel(self.main_frame, text="Found files:", font=ctk.CTkFont(size=14, weight="bold"))
+        treeview_label.pack(anchor="w", pady=(0, 5))  # Reduced from (0, 10) to (0, 5)
 
-        # Frame for TreeView with scrollbars
-        tree_frame = ttk.Frame(parent)
-        tree_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 20))
-        tree_frame.columnconfigure(0, weight=1)
-        tree_frame.rowconfigure(0, weight=1)
+        # Frame for TreeView (still using tkinter TreeView as CustomTkinter doesn't have equivalent)
+        self.tree_frame = ctk.CTkFrame(self.main_frame, height=200)  # Fixed height to make it 50% shorter
+        self.tree_frame.pack(fill="x", pady=(0, 10))  # Reduced from (0, 20) to (0, 10)
+        self.tree_frame.pack_propagate(False)  # Prevent frame from shrinking
 
-        # TreeView widget
-        self.tree = ttk.Treeview(tree_frame,
-                                 columns=('SubtitleFile', 'VideoFile', 'Title', 'Year', 'FolderPath', 'Status'),
-                                 show='tree headings')
+        # Create a tkinter frame inside the CustomTkinter frame for the TreeView
+        self.tree_container = tk.Frame(self.tree_frame, bg="#1a1a1a")  # Dark background
+        self.tree_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Configure TreeView style BEFORE creating the TreeView
+        self._configure_treeview_style()
+
+        # TreeView widget (keeping tkinter TreeView for functionality)
+        self.tree = tk.ttk.Treeview(
+            self.tree_container,
+            columns=('SubtitleFile', 'VideoFile', 'Title', 'Year', 'FolderPath', 'Status'),
+            show='tree headings',
+            style="Dark.Treeview"  # Use our custom dark style
+        )
 
         # Column configuration
         self.tree.heading('#0', text='☑️ Select')
@@ -182,72 +251,194 @@ class DragDropGUI:
         self.tree.column('FolderPath', width=130, minwidth=100)
         self.tree.column('Status', width=120, minwidth=100)
 
-        # Scrollbars
-        tree_scrolly = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        tree_scrollx = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        # Scrollbars with dark styling
+        tree_scrolly = tk.ttk.Scrollbar(self.tree_container, orient=tk.VERTICAL, command=self.tree.yview)
+        tree_scrollx = tk.ttk.Scrollbar(self.tree_container, orient=tk.HORIZONTAL, command=self.tree.xview)
         self.tree.configure(yscrollcommand=tree_scrolly.set, xscrollcommand=tree_scrollx.set)
 
         # Grid layout for TreeView and scrollbars
-        self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        tree_scrolly.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        tree_scrollx.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        tree_scrolly.grid(row=0, column=1, sticky="ns")
+        tree_scrollx.grid(row=1, column=0, sticky="ew")
 
-        # Configure TreeView tags
+        # Configure grid weights
+        self.tree_container.grid_rowconfigure(0, weight=1)
+        self.tree_container.grid_columnconfigure(0, weight=1)
+
+        # Configure TreeView tags AFTER creating the TreeView
         self._configure_treeview_tags()
 
         # Bind events
         self.tree.bind('<Double-1>', self.toggle_checkbox)
         self.tree.bind('<Button-1>', self.on_tree_click)
 
+    def _configure_treeview_style(self):
+        """Configure TreeView style for dark theme"""
+        style = tk.ttk.Style()
+
+        # Create a custom dark style for TreeView
+        style.theme_use('clam')  # Use clam theme as base for better customization
+
+        # Configure the dark TreeView style
+        style.configure("Dark.Treeview",
+                       background="#2b2b2b",           # Dark background
+                       foreground="#ffffff",           # White text
+                       fieldbackground="#2b2b2b",      # Dark field background
+                       borderwidth=0,                  # No borders
+                       relief="flat",                  # Flat appearance
+                       rowheight=25)                   # Row height
+
+        # Configure TreeView headings
+        style.configure("Dark.Treeview.Heading",
+                       background="#404040",           # Dark gray headers
+                       foreground="#ffffff",           # White text
+                       borderwidth=1,                  # Thin border
+                       relief="solid",                 # Solid border style
+                       font=('Arial', 9, 'bold'))      # Bold font
+
+        # Configure selection and hover effects
+        style.map("Dark.Treeview",
+                 background=[('selected', '#1f538d'),    # Blue when selected
+                            ('active', '#404040')],      # Gray when hovered
+                 foreground=[('selected', '#ffffff'),    # White text when selected
+                            ('active', '#ffffff')])      # White text when hovered
+
+        # Configure scrollbars to be dark
+        style.configure("Vertical.TScrollbar",
+                       background="#404040",
+                       troughcolor="#2b2b2b",
+                       borderwidth=0,
+                       arrowcolor="#ffffff",
+                       darkcolor="#404040",
+                       lightcolor="#404040")
+
+        style.configure("Horizontal.TScrollbar",
+                       background="#404040",
+                       troughcolor="#2b2b2b",
+                       borderwidth=0,
+                       arrowcolor="#ffffff",
+                       darkcolor="#404040",
+                       lightcolor="#404040")
+
     def _configure_treeview_tags(self):
         """Configure TreeView tags for different statuses"""
-        self.tree.tag_configure('matched', background='#2d5a2d', foreground='#ffffff')
-        self.tree.tag_configure('subtitle_only', background='#5a5a2d', foreground='#ffffff')
-        self.tree.tag_configure('video_only', background='#2d2d5a', foreground='#ffffff')
-        self.tree.tag_configure('no_match', background='#5a2d2d', foreground='#ffffff')
-        self.tree.tag_configure('unchecked', background='#404040', foreground='#888888')
+        # Configure TreeView style for dark theme
+        style = tk.ttk.Style()
 
-    def _create_console(self, parent):
+        # Configure the TreeView to work with dark theme
+        if ctk.get_appearance_mode() == "Dark":
+            # Dark theme colors
+            style.configure("Treeview",
+                          background="#2b2b2b",
+                          foreground="#ffffff",
+                          fieldbackground="#2b2b2b",
+                          borderwidth=0,
+                          relief="flat")
+            style.configure("Treeview.Heading",
+                          background="#404040",
+                          foreground="#ffffff",
+                          borderwidth=1,
+                          relief="solid")
+            # Configure selection colors
+            style.map("Treeview",
+                     background=[('selected', '#1f538d')],
+                     foreground=[('selected', '#ffffff')])
+        else:
+            # Light theme colors (fallback)
+            style.configure("Treeview",
+                          background="#ffffff",
+                          foreground="#000000",
+                          fieldbackground="#ffffff")
+            style.configure("Treeview.Heading",
+                          background="#f0f0f0",
+                          foreground="#000000")
+
+        # Configure tags with proper colors for dark theme
+        self.tree.tag_configure('matched',
+                               background='#2d5a2d',
+                               foreground='#ffffff')
+        self.tree.tag_configure('subtitle_only',
+                               background='#5a5a2d',
+                               foreground='#ffffff')
+        self.tree.tag_configure('video_only',
+                               background='#2d2d5a',
+                               foreground='#ffffff')
+        self.tree.tag_configure('no_match',
+                               background='#5a2d2d',
+                               foreground='#ffffff')
+        self.tree.tag_configure('unchecked',
+                               background='#404040',
+                               foreground='#888888')
+
+    def _create_console(self):
         """Create the console output area"""
-        console_label = ttk.Label(parent, text="Console output:")
-        console_label.grid(row=3, column=0, sticky=tk.W, pady=(0, 5))
+        console_label = ctk.CTkLabel(self.main_frame, text="Console output:", font=ctk.CTkFont(size=14, weight="bold"))
+        console_label.pack(anchor="w", pady=(0, 5))  # Reduced from (0, 10) to (0, 5)
 
-        self.console_text = scrolledtext.ScrolledText(parent, height=15, width=70)
-        self.console_text.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        # Console frame - made 50% shorter with fixed height
+        self.console_frame = ctk.CTkFrame(self.main_frame, height=150)  # Fixed height to make it 50% shorter
+        self.console_frame.pack(fill="x", pady=(0, 10))  # Reduced from (0, 20) to (0, 10)
+        self.console_frame.pack_propagate(False)  # Prevent frame from shrinking
 
-    def _create_config_sections(self, parent):
+        # Create tkinter frame for the ScrolledText widget
+        # Get the current appearance mode colors
+        if ctk.get_appearance_mode() == "Dark":
+            bg_color = "#212121"
+        else:
+            bg_color = "#f0f0f0"
+
+        self.console_container = tk.Frame(self.console_frame, bg=bg_color)
+        self.console_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Console text widget - reduced height from 12 to 6 lines
+        self.console_text = scrolledtext.ScrolledText(
+            self.console_container,
+            height=6,  # Reduced from 12 to 6 lines (50% shorter)
+            bg='#2b2b2b',
+            fg='#ffffff',
+            font=('Consolas', 10),
+            insertbackground='white'
+        )
+        self.console_text.pack(fill="both", expand=True)
+
+    def _create_config_sections(self):
         """Create expandable configuration sections"""
         # Configuration Sections Container
-        config_container = ttk.Frame(parent)
-        config_container.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(20, 10))
-        config_container.columnconfigure(0, weight=1)
-
-        # Headers frame for both API and Settings buttons
-        headers_frame = ttk.Frame(config_container)
-        headers_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.config_container = ctk.CTkFrame(self.main_frame)
+        self.config_container.pack(fill="x", pady=(0, 20))
 
         # Get UI config
         ui_config = self.config_manager.get_ui_config()
 
+        # Headers frame for both API and Settings buttons
+        self.headers_frame = ctk.CTkFrame(self.config_container)
+        self.headers_frame.pack(fill="x", padx=10, pady=10)
+
         # API Configuration Section - Expandable
         self.api_expanded = tk.BooleanVar(value=ui_config['api_expanded'])
-        self.expand_api_button = tk.Button(headers_frame, text="▶ Show API options",
-                                           bg='#e0e0e0', fg='black', font=('Arial', 10),
-                                           relief='flat', bd=0, pady=5,
-                                           command=self.toggle_api_section)
-        self.expand_api_button.pack(side=tk.LEFT, padx=(0, 10))
+        self.expand_api_button = ctk.CTkButton(
+            self.headers_frame,
+            text="▶ Show API options",
+            command=self.toggle_api_section,
+            width=150,
+            height=32
+        )
+        self.expand_api_button.pack(side="left", padx=(0, 10))
 
         # Settings Section - Expandable
         self.settings_expanded = tk.BooleanVar(value=ui_config['settings_expanded'])
-        self.expand_settings_button = tk.Button(headers_frame, text="▶ Settings",
-                                                bg='#e0e0e0', fg='black', font=('Arial', 10),
-                                                relief='flat', bd=0, pady=5,
-                                                command=self.toggle_settings_section)
-        self.expand_settings_button.pack(side=tk.LEFT)
+        self.expand_settings_button = ctk.CTkButton(
+            self.headers_frame,
+            text="▶ Settings",
+            command=self.toggle_settings_section,
+            width=100,
+            height=32
+        )
+        self.expand_settings_button.pack(side="left")
 
         # Create the actual configuration forms
-        self._create_api_options(config_container)
-        self._create_settings_options(config_container)
+        self._create_api_options()
+        self._create_settings_options()
 
         # Set initial states
         if self.api_expanded.get():
@@ -255,109 +446,201 @@ class DragDropGUI:
         if self.settings_expanded.get():
             self.toggle_settings_section()
 
-    def _create_api_options(self, parent):
+    def _create_api_options(self):
         """Create API configuration options"""
         # API options frame (initially hidden)
-        self.api_options_frame = ttk.Frame(parent)
+        self.api_options_frame = ctk.CTkFrame(self.config_container)
 
         api_config = self.config_manager.get_api_config()
 
+        # Row 1: Gemini API Key and Model
+        row1_frame = ctk.CTkFrame(self.api_options_frame)
+        row1_frame.pack(fill="x", padx=10, pady=(10, 5))
+
         # Gemini API Key
-        ttk.Label(self.api_options_frame, text="Gemini API Key:").grid(row=0, column=0, sticky=tk.W, pady=(10, 5))
+        ctk.CTkLabel(row1_frame, text="Gemini API Key:").pack(side="left", padx=(10, 5))
         self.gemini_api_key = tk.StringVar(value=api_config['gemini_api_key'])
-        gemini_entry = ttk.Entry(self.api_options_frame, textvariable=self.gemini_api_key, show="*", width=50)
-        gemini_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=(10, 5))
+        self.gemini_entry = ctk.CTkEntry(row1_frame, textvariable=self.gemini_api_key, show="*", width=300)
+        self.gemini_entry.pack(side="left", padx=(0, 20))
 
         # Model
-        ttk.Label(self.api_options_frame, text="Model:").grid(row=0, column=2, sticky=tk.W, padx=(20, 0), pady=(10, 5))
+        ctk.CTkLabel(row1_frame, text="Model:").pack(side="left", padx=(10, 5))
         self.model = tk.StringVar(value=api_config['model'])
-        model_combo = ttk.Combobox(self.api_options_frame, textvariable=self.model, width=25,
-                                   values=["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash",
-                                           "gemini-2.5-pro-preview-06-05"])
-        model_combo.grid(row=0, column=3, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        self.model_combo = ctk.CTkComboBox(
+            row1_frame,
+            variable=self.model,
+            width=250,
+            values=["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]
+        )
+        self.model_combo.pack(side="left", padx=(0, 10))
 
-        # TMDB API Key
-        ttk.Label(self.api_options_frame, text="TMDB API Key (optional):").grid(row=1, column=0, sticky=tk.W,
-                                                                                pady=(5, 5))
+        # Row 2: TMDB API Key
+        row2_frame = ctk.CTkFrame(self.api_options_frame)
+        row2_frame.pack(fill="x", padx=10, pady=(5, 10))
+
+        ctk.CTkLabel(row2_frame, text="TMDB API Key (optional):").pack(side="left", padx=(10, 5))
         self.tmdb_api_key = tk.StringVar(value=api_config['tmdb_api_key'])
-        tmdb_entry = ttk.Entry(self.api_options_frame, textvariable=self.tmdb_api_key, show="*", width=50)
-        tmdb_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=(5, 5))
+        self.tmdb_entry = ctk.CTkEntry(row2_frame, textvariable=self.tmdb_api_key, show="*", width=300)
+        self.tmdb_entry.pack(side="left", padx=(0, 10))
 
-        # Configure column weights
-        self.api_options_frame.columnconfigure(1, weight=1)
-
-    def _create_settings_options(self, parent):
+    def _create_settings_options(self):
         """Create general settings options"""
         # Settings options frame (initially hidden)
-        self.settings_options_frame = ttk.Frame(parent)
+        self.settings_options_frame = ctk.CTkFrame(self.config_container)
 
         processing_config = self.config_manager.get_processing_config()
 
-        # Language setting
-        ttk.Label(self.settings_options_frame, text="Language:").grid(row=0, column=0, sticky=tk.W, pady=(10, 5))
-        self.language = tk.StringVar(value=processing_config['language'])
-        language_entry = ttk.Entry(self.settings_options_frame, textvariable=self.language, width=20)
-        language_entry.grid(row=0, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        # Row 1: Language and Language Code
+        row1_frame = ctk.CTkFrame(self.settings_options_frame)
+        row1_frame.pack(fill="x", padx=10, pady=(10, 5))
 
-        # Language code setting
-        ttk.Label(self.settings_options_frame, text="Code:").grid(row=0, column=2, sticky=tk.W, padx=(20, 0),
-                                                                  pady=(10, 5))
+        ctk.CTkLabel(row1_frame, text="Language:").pack(side="left", padx=(10, 5))
+        self.language = tk.StringVar(value=processing_config['language'])
+        self.language_entry = ctk.CTkEntry(row1_frame, textvariable=self.language, width=150)
+        self.language_entry.pack(side="left", padx=(0, 20))
+
+        ctk.CTkLabel(row1_frame, text="Code:").pack(side="left", padx=(10, 5))
         self.language_code = tk.StringVar(value=processing_config.get('language_code', 'pl'))
-        language_code_entry = ttk.Entry(self.settings_options_frame, textvariable=self.language_code, width=5)
-        language_code_entry.grid(row=0, column=3, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        self.language_code_entry = ctk.CTkEntry(row1_frame, textvariable=self.language_code, width=60)
+        self.language_code_entry.pack(side="left", padx=(0, 20))
 
         # Extract audio checkbox
         self.extract_audio = tk.BooleanVar(value=processing_config['extract_audio'])
-        extract_audio_check = ttk.Checkbutton(self.settings_options_frame, text="Extract audio",
-                                              variable=self.extract_audio)
-        extract_audio_check.grid(row=0, column=4, sticky=tk.W, padx=(20, 0), pady=(10, 5))
+        self.extract_audio_check = ctk.CTkCheckBox(row1_frame, text="Extract audio", variable=self.extract_audio)
+        self.extract_audio_check.pack(side="left", padx=(10, 0))
 
-        # TMDB ID section
-        ttk.Label(self.settings_options_frame, text="TMDB ID:").grid(row=1, column=0, sticky=tk.W, pady=(10, 5))
+        # Row 2: TMDB ID and TV Series
+        row2_frame = ctk.CTkFrame(self.settings_options_frame)
+        row2_frame.pack(fill="x", padx=10, pady=(5, 5))
+
+        ctk.CTkLabel(row2_frame, text="TMDB ID:").pack(side="left", padx=(10, 5))
         self.tmdb_id = tk.StringVar(value=self.config_manager.get('tmdb_id', ''))
-        tmdb_id_entry = ttk.Entry(self.settings_options_frame, textvariable=self.tmdb_id, width=15)
-        tmdb_id_entry.grid(row=1, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        self.tmdb_id_entry = ctk.CTkEntry(row2_frame, textvariable=self.tmdb_id, width=120)
+        self.tmdb_id_entry.pack(side="left", padx=(0, 10))
+
+        # Fetch TMDB info button
+        self.fetch_tmdb_button = ctk.CTkButton(
+            row2_frame,
+            text="🎬 Fetch",
+            command=self.fetch_tmdb_info,
+            width=80,
+            height=28
+        )
+        self.fetch_tmdb_button.pack(side="left", padx=(0, 20))
 
         # TV Series checkbox
         self.is_tv_series = tk.BooleanVar(value=processing_config.get('is_tv_series', False))
-        tv_series_check = ttk.Checkbutton(self.settings_options_frame, text="TV Series",
-                                          variable=self.is_tv_series)
-        tv_series_check.grid(row=1, column=2, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        self.tv_series_check = ctk.CTkCheckBox(row2_frame, text="TV Series", variable=self.is_tv_series)
+        self.tv_series_check.pack(side="left", padx=(10, 0))
+
+        # Row 3: Overview
+        row3_frame = ctk.CTkFrame(self.settings_options_frame)
+        row3_frame.pack(fill="x", padx=10, pady=(5, 5))
+
+        ctk.CTkLabel(row3_frame, text="Overview:").pack(side="left", padx=(10, 5))
+        self.overview = tk.StringVar(value='')
+        self.overview_entry = ctk.CTkEntry(row3_frame, textvariable=self.overview, width=500)
+        self.overview_entry.pack(side="left", padx=(0, 10), fill="x", expand=True)
+
+        # Row 4: Auto-fetch and Add translator info
+        row4_frame = ctk.CTkFrame(self.settings_options_frame)
+        row4_frame.pack(fill="x", padx=10, pady=(5, 5))
+
+        self.auto_fetch_tmdb = tk.BooleanVar(value=processing_config['auto_fetch_tmdb'])
+        self.auto_fetch_check = ctk.CTkCheckBox(row4_frame, text="Auto-fetch TMDB ID when loading files", variable=self.auto_fetch_tmdb)
+        self.auto_fetch_check.pack(side="left", padx=(10, 20))
 
         self.add_translator_info = tk.BooleanVar(value=processing_config.get('add_translator_info', True))
-        add_translator_info_check = ttk.Checkbutton(self.settings_options_frame, text="Add translator info",
-                                          variable=self.add_translator_info)
-        add_translator_info_check.grid(row=3, column=4, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        self.add_translator_info_check = ctk.CTkCheckBox(row4_frame, text="Add translator info", variable=self.add_translator_info)
+        self.add_translator_info_check.pack(side="left", padx=(10, 0))
 
-        # Fetch TMDB info button (using TMDB ID)
-        fetch_tmdb_button = tk.Button(self.settings_options_frame, text="🎬 Fetch",
-                                      bg='#d0e0ff', fg='black', font=('Arial', 9),
-                                      relief='raised', bd=1, pady=3,
-                                      command=self.fetch_tmdb_info)
-        fetch_tmdb_button.grid(row=1, column=3, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        # Row 5: Poster image
+        row5_frame = ctk.CTkFrame(self.settings_options_frame)
+        row5_frame.pack(fill="x", padx=10, pady=(5, 10))
 
-        # TMDB Overview section
-        ttk.Label(self.settings_options_frame, text="Overview:").grid(row=2, column=0, sticky=tk.W, pady=(10, 5))
-        self.overview = tk.StringVar(value='')
-        overview_entry = ttk.Entry(self.settings_options_frame, textvariable=self.overview, width=60)
-        overview_entry.grid(row=2, column=1, columnspan=4, sticky=(tk.W, tk.E), padx=(10, 0), pady=(10, 5))
+        ctk.CTkLabel(row5_frame, text="Poster:").pack(side="left", padx=(10, 5))
+        self.image_label = ctk.CTkLabel(row5_frame, text="No image", width=100, height=150)
+        self.image_label.pack(side="left", padx=(0, 10))
 
-        # Auto-fetch TMDB checkbox
-        self.auto_fetch_tmdb = tk.BooleanVar(value=processing_config['auto_fetch_tmdb'])
-        auto_fetch_check = ttk.Checkbutton(self.settings_options_frame, text="Auto-fetch TMDB ID when loading files",
-                                           variable=self.auto_fetch_tmdb)
-        auto_fetch_check.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(5, 10))
-        self.setup_image_display()
+    def _create_action_buttons(self):
+        """Create action buttons"""
+        # Buttons frame with reduced margins
+        self.buttons_frame = ctk.CTkFrame(self.main_frame)
+        self.buttons_frame.pack(fill="x", pady=(0, 10))  # Reduced from (0, 20) to (0, 10)
 
-    def setup_image_display(self):
-        ttk.Label(self.settings_options_frame, text="Poster:").grid(row=4, column=0, sticky=tk.W, pady=(10, 5))
+        # Translate Button
+        self.translate_button = ctk.CTkButton(
+            self.buttons_frame,
+            text="🌐 TRANSLATE",
+            command=self.start_translation,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            height=50,
+            fg_color=("green", "darkgreen"),
+            hover_color=("lightgreen", "green")
+        )
+        self.translate_button.pack(fill="x", padx=20, pady=10)
 
-        # Create a label to hold the image
-        self.image_label = ttk.Label(self.settings_options_frame)
-        self.image_label.grid(row=4, column=1, sticky=tk.W, padx=(10, 0), pady=(10, 5))
+        # Cancel Button (initially hidden)
+        self.cancel_button = ctk.CTkButton(
+            self.buttons_frame,
+            text="❌ CANCEL",
+            command=self.cancel_translation,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            height=50,
+            fg_color=("red", "darkred"),
+            hover_color=("lightcoral", "red")
+        )
 
-    # Function to load and display image
-    def load_image(self, url, width=100, height=150):  # 100x150 is more typical for movie posters
+    def _create_status_bar(self):
+        """Create status bar"""
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_bar = ctk.CTkLabel(
+            self.main_frame,
+            textvariable=self.status_var,
+            font=ctk.CTkFont(size=12),
+            corner_radius=0,
+            fg_color="transparent"
+        )
+        self.status_bar.pack(fill="x", pady=(0, 5))  # Reduced from (0, 10) to (0, 5)
+
+    def toggle_api_section(self):
+        """Toggle the visibility of API configuration section"""
+        if self.api_expanded.get():
+            # Hide API options
+            self.api_options_frame.pack_forget()
+            self.expand_api_button.configure(text="▶ Show API options")
+            self.api_expanded.set(False)
+        else:
+            # Show API options
+            self.api_options_frame.pack(fill="x", padx=10, pady=(5, 0))
+            self.expand_api_button.configure(text="▼ Hide API options")
+            self.api_expanded.set(True)
+
+    def toggle_settings_section(self):
+        """Toggle the visibility of Settings section"""
+        if self.settings_expanded.get():
+            # Hide Settings options
+            self.settings_options_frame.pack_forget()
+            self.expand_settings_button.configure(text="▶ Settings")
+            self.settings_expanded.set(False)
+        else:
+            # Show Settings options
+            self.settings_options_frame.pack(fill="x", padx=10, pady=(5, 0))
+            self.expand_settings_button.configure(text="▼ Settings")
+            self.settings_expanded.set(True)
+
+    def show_cancel_button(self):
+        """Show cancel button and hide translate button"""
+        self.translate_button.pack_forget()
+        self.cancel_button.pack(fill="x", padx=20, pady=10)
+
+    def show_translate_button(self):
+        """Show translate button and hide cancel button"""
+        self.cancel_button.pack_forget()
+        self.translate_button.pack(fill="x", padx=20, pady=10)
+
+    def load_image(self, url, width=100, height=150):
+        """Load and display image using CTkImage for proper scaling"""
         try:
             response = requests.get(url)
             response.raise_for_status()
@@ -365,89 +648,23 @@ class DragDropGUI:
             # Open image from bytes
             image = Image.open(BytesIO(response.content))
 
-            # Resize image
-            image = image.resize((width, height), Image.Resampling.LANCZOS)
+            # Create CTkImage instead of PhotoImage for proper CustomTkinter support
+            ctk_image = ctk.CTkImage(
+                light_image=image,  # Image for light mode
+                dark_image=image,   # Same image for dark mode
+                size=(width, height)  # CTkImage handles scaling automatically
+            )
 
-            # Convert to PhotoImage
-            photo = ImageTk.PhotoImage(image)
-
-            # Update the label
-            self.image_label.configure(image=photo)
-            self.image_label.image = photo
+            # Update the label with CTkImage
+            self.image_label.configure(image=ctk_image, text="")
+            # Store reference to prevent garbage collection
+            self.image_label.image = ctk_image
 
         except Exception as e:
             print(f"Error loading image: {e}")
-            self.image_label.configure(text="Image not available")
+            self.image_label.configure(text="Image not available", image=None)
 
-        # Configure column weights
-        self.settings_options_frame.columnconfigure(1, weight=1)
-
-    def _create_action_buttons(self, parent):
-        """Create action buttons"""
-        # Ramka dla przycisków
-        buttons_frame = ttk.Frame(parent)
-        buttons_frame.grid(row=6, column=0, pady=(10, 10), sticky=(tk.W, tk.E))
-        buttons_frame.columnconfigure(0, weight=1)
-        buttons_frame.columnconfigure(1, weight=1)
-
-        # Translate Button
-        self.translate_button = tk.Button(buttons_frame, text="🌐 TRANSLATE",
-                                          bg='#f0f0f0', fg='black', font=('Arial', 12, 'bold'),
-                                          relief='raised', bd=3, pady=10,
-                                          activebackground='#e0e0e0', activeforeground='black',
-                                          command=self.start_translation)
-        self.translate_button.grid(row=0, column=0, padx=(0, 5), sticky=(tk.W, tk.E))
-
-        # Cancel Button (initially hidden)
-        self.cancel_button = tk.Button(buttons_frame, text="❌ CANCEL",
-                                       bg='#ffcccc', fg='black', font=('Arial', 12, 'bold'),
-                                       relief='raised', bd=3, pady=10,
-                                       activebackground='#ffaaaa', activeforeground='black',
-                                       command=self.cancel_translation)
-
-    def _create_status_bar(self, parent):
-        """Create status bar"""
-        self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(parent, textvariable=self.status_var,
-                               relief=tk.SUNKEN, anchor=tk.W)
-        status_bar.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
-
-    def toggle_api_section(self):
-        """Toggle the visibility of API configuration section"""
-        if self.api_expanded.get():
-            # Hide API options
-            self.api_options_frame.grid_forget()
-            self.expand_api_button.config(text="▶ Show API options")
-            self.api_expanded.set(False)
-        else:
-            # Show API options
-            self.api_options_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
-            self.expand_api_button.config(text="▼ Hide API options")
-            self.api_expanded.set(True)
-
-    def toggle_settings_section(self):
-        """Toggle the visibility of Settings section"""
-        if self.settings_expanded.get():
-            # Hide Settings options
-            self.settings_options_frame.grid_forget()
-            self.expand_settings_button.config(text="▶ Settings")
-            self.settings_expanded.set(False)
-        else:
-            # Show Settings options
-            self.settings_options_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
-            self.expand_settings_button.config(text="▼ Settings")
-            self.settings_expanded.set(True)
-
-    def show_cancel_button(self):
-        """Show cancel button and hide translate button"""
-        self.translate_button.grid_forget()
-        self.cancel_button.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E))
-
-    def show_translate_button(self):
-        """Show translate button and hide cancel button"""
-        self.cancel_button.grid_forget()
-        self.translate_button.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E))
-
+    # Keep all the original methods for functionality
     def cancel_translation(self):
         """Cancel the current translation process"""
         if self.processing_thread and self.processing_thread.is_alive():
@@ -462,7 +679,6 @@ class DragDropGUI:
 
             if self.processing_thread.is_alive():
                 self.log_to_console("⚠️ Force terminating process...")
-                # If thread is still running, mark as terminated
 
             self.log_to_console("✅ Processing has been cancelled")
             self.status_var.set("Cancelled")
@@ -532,7 +748,7 @@ class DragDropGUI:
         """Additional security to ensure window is in front"""
         try:
             # For macOS - try AppleScript
-            if sys.platform == "darwin":
+            if os.name == "posix":
                 os.system('''/usr/bin/osascript -e 'tell app "Finder" to set frontmost of process "Python" to true' ''')
         except:
             pass
@@ -864,8 +1080,12 @@ class DragDropGUI:
         values = self.tree.item(item, 'values')
 
         if current_text.startswith('☑️'):
-            # Uncheck
-            new_text = '☐' + current_text[1:]
+            # Uncheck - remove the checkmark and any following space
+            if current_text.startswith('☑️ '):
+                new_text = '☐ ' + current_text[3:]  # Remove "☑️ " and add "☐ "
+            else:
+                new_text = '☐' + current_text[1:]   # Remove just "☑️" and add "☐"
+
             new_values = list(values)
             if len(new_values) >= 6:
                 original_status = new_values[5]
@@ -874,8 +1094,12 @@ class DragDropGUI:
             self.tree.item(item, text=new_text, values=new_values, tags=('unchecked',))
 
         elif current_text.startswith('☐'):
-            # Check
-            new_text = '☑️' + current_text[1:]
+            # Check - remove the unchecked box and any following space
+            if current_text.startswith('☐ '):
+                new_text = '☑️ ' + current_text[2:]  # Remove "☐ " and add "☑️ "
+            else:
+                new_text = '☑️' + current_text[1:]   # Remove just "☐" and add "☑️"
+
             new_values = list(values)
             if len(new_values) >= 6:
                 current_status = new_values[5]
@@ -887,7 +1111,7 @@ class DragDropGUI:
             original_tag = self._determine_tag_from_status(new_values[5] if len(new_values) >= 6 else "")
             self.tree.item(item, text=new_text, values=new_values, tags=(original_tag,))
         else:
-            # Add checkbox
+            # Add checkbox - ensure proper spacing
             new_text = '☑️ ' + current_text
             self.tree.item(item, text=new_text)
 
@@ -1052,7 +1276,6 @@ class DragDropGUI:
             return
 
         # Filter pairs based on extract audio setting
-        # valid_pairs = self._filter_valid_pairs(selected_pairs)
         valid_pairs = selected_pairs
 
         if not valid_pairs:
@@ -1074,32 +1297,15 @@ class DragDropGUI:
         """Hide both API and Settings dropdown menus"""
         # Hide API options if expanded
         if self.api_expanded.get():
-            self.api_options_frame.grid_forget()
-            self.expand_api_button.config(text="▶ Show API options")
+            self.api_options_frame.pack_forget()
+            self.expand_api_button.configure(text="▶ Show API options")
             self.api_expanded.set(False)
 
         # Hide Settings options if expanded
         if self.settings_expanded.get():
-            self.settings_options_frame.grid_forget()
-            self.expand_settings_button.config(text="▶ Settings")
+            self.settings_options_frame.pack_forget()
+            self.expand_settings_button.configure(text="▶ Settings")
             self.settings_expanded.set(False)
-
-    def _filter_valid_pairs(self, selected_pairs):
-        """Filter pairs based on current settings"""
-        valid_pairs = []
-        extract_audio = self.extract_audio.get()
-
-        for pair in selected_pairs:
-            if extract_audio:
-                # Need both subtitle and video files
-                if pair['subtitle'] and pair['video']:
-                    valid_pairs.append(pair)
-            else:
-                # Only need subtitle files
-                if pair['subtitle']:
-                    valid_pairs.append(pair)
-
-        return valid_pairs
 
     def _confirm_translation(self, valid_pairs, total_selected):
         """Show confirmation dialog for translation"""
@@ -1165,7 +1371,7 @@ class DragDropGUI:
                     'movie_title': self._get_movie_title_from_treeview(),
                     'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
                     'cancel_event': self.cancel_event,
-                    'add_translator_info': self.add_translator_info.get() if hasattr(self, 'is_tv_series') else True
+                    'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True
                 }
 
                 # Run translation using CLI runner
@@ -1189,7 +1395,7 @@ class DragDropGUI:
 
         self.show_cancel_button()
 
-        # Reset cancel event przed rozpoczęciem
+        # Reset cancel event before starting
         self.cancel_event.clear()
 
         # Run in separate thread

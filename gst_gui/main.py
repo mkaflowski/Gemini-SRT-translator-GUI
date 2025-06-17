@@ -1,6 +1,6 @@
 """
 Main entry point for the CLI Wrapper GUI application.
-Enhanced version with better error handling and fallback options.
+Enhanced version with better error handling, fallback options, and CustomTkinter support.
 """
 
 import os
@@ -36,6 +36,13 @@ def check_external_dependencies():
     except ImportError:
         warnings.append("requests not installed - TMDB auto-fetch will not work")
         warnings.append("Install with: pip install requests")
+
+    # Check customtkinter (required for modern UI)
+    try:
+        import customtkinter
+    except ImportError:
+        warnings.append("customtkinter not installed - falling back to regular tkinter")
+        warnings.append("Install with: pip install customtkinter")
 
     # Check tkinterdnd2 (optional for drag & drop)
     try:
@@ -84,6 +91,50 @@ def setup_macos_focus():
         pass
 
 
+def check_customtkinter_support():
+    """Check if CustomTkinter is available and working"""
+    try:
+        import customtkinter as ctk
+        # Test if CustomTkinter can be initialized
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+        return True, ctk
+    except ImportError:
+        return False, None
+    except Exception as e:
+        print(f"⚠️  CustomTkinter available but initialization failed: {e}")
+        return False, None
+
+
+def create_root_window(use_customtkinter=True):
+    """Create appropriate root window based on available libraries"""
+    has_ctk, ctk = check_customtkinter_support()
+
+    if use_customtkinter and has_ctk:
+        try:
+            # Set CustomTkinter appearance BEFORE creating window
+            ctk.set_appearance_mode("dark")  # "System", "Dark", "Light"
+            ctk.set_default_color_theme("blue")  # "blue", "green", "dark-blue"
+
+            # Create CustomTkinter root window
+            root = ctk.CTk()
+            print("✅ Using CustomTkinter (modern dark UI)")
+            return root, "customtkinter"
+        except Exception as e:
+            print(f"⚠️  CustomTkinter failed, falling back to tkinter: {e}")
+
+    # Fallback to regular tkinter
+    root = tk.Tk()
+    # Try to set dark-ish colors for regular tkinter
+    try:
+        root.configure(bg='#2b2b2b')
+        print("✅ Using regular tkinter (basic UI)")
+    except Exception:
+        print("✅ Using regular tkinter (system UI)")
+
+    return root, "tkinter"
+
+
 def try_import_gui():
     """Try to import the GUI with multiple fallback strategies"""
     gui_class = None
@@ -122,7 +173,7 @@ def try_import_gui():
 
 
 def main():
-    """Enhanced main entry point with comprehensive error handling"""
+    """Enhanced main entry point with comprehensive error handling and CustomTkinter support"""
     print("🚀 Starting CLI Wrapper GUI...")
     print("=" * 50)
 
@@ -140,7 +191,7 @@ def main():
     # Check external dependencies
     dep_warnings = check_external_dependencies()
     if dep_warnings:
-        print("⚠️  Dependency Warnings:")
+        print("⚠️  Dependency Status:")
         for warning in dep_warnings:
             print(f"   • {warning}")
         print()
@@ -164,19 +215,24 @@ def main():
         print("   3. Check that all files are in the correct locations")
         return 1
 
+    print(f"✅ Found GUI class from: {import_source}")
+
     try:
-        # Create root window
-        root = tk.Tk()
+        # Create root window (try CustomTkinter first, fallback to tkinter)
+        print("🎨 Setting up GUI window...")
+        root, ui_type = create_root_window(use_customtkinter=True)
 
         # macOS-specific setup
         if sys.platform == "darwin":
             setup_macos_focus()
 
         # Create application
-        print("🎨 Creating GUI application...")
+        print("🔧 Initializing application...")
         app = gui_class(root)
 
-        print("✅ GUI started successfully!")
+        print(f"✅ GUI started successfully using {ui_type}!")
+        if ui_type == "customtkinter":
+            print("🌙 Dark theme enabled - enjoy the modern UI!")
         print("=" * 50)
 
         # Start main loop
@@ -193,6 +249,7 @@ def main():
         print("   • Check that all files are in the correct directories")
         print("   • Verify __init__.py files exist in gui/ and utils/")
         print("   • Run from the project root directory")
+        print("   • Try: pip install customtkinter")
         return 1
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
@@ -206,6 +263,7 @@ def main():
         print("\n🔧 Troubleshooting:")
         print("   • Check the console output above for specific errors")
         print("   • Ensure all dependencies are installed")
+        print("   • Try: pip install customtkinter requests tkinterdnd2")
         print("   • Try running 'python migrate.py' first")
         return 1
 
@@ -219,7 +277,6 @@ if __name__ == "__main__":
         except AttributeError:
             # For older Python versions
             import codecs
-
             sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'replace')
             sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'replace')
 
