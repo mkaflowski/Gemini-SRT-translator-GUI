@@ -90,7 +90,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **[MaKTaiL](https://github.com/MaKTaiL)** - For the original Gemini SRT Translator command-line tool
 - **Google Gemini AI** - For powerful translation capabilities
 - **TMDB** - For movie and TV series metadata
-- **tkinterdnd2** - For drag and drop functionality
+- **[tkinterdnd2](https://github.com/TomSchimansky/CustomTkinter)** - For drag and drop functionality
 - **PyInstaller** - For executable creation
 
 ---
