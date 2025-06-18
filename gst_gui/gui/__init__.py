@@ -1,7 +1,7 @@
 # gui/__init__.py
 """
 GUI package for the CLI Wrapper application.
-Contains the main window and UI components.
+Contains the main window and UI handlers.
 """
 
 from .main_window import DragDropGUI

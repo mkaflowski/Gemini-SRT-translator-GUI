@@ -1,6 +1,6 @@
 """
 Main window class for the CLI Wrapper GUI application.
-Coordinates between UI components, file processing, and configuration.
+Coordinates between UI handlers, file processing, and configuration.
 """
 import re
 import tkinter as tk
@@ -10,6 +10,8 @@ from tkinter import messagebox, scrolledtext
 import threading
 from pathlib import Path
 import os
+from gst_gui.handlers.drag_drop_handler import DropAreaHandler
+
 
 import requests
 from PIL import ImageTk, Image
@@ -46,7 +48,7 @@ except ImportError:
 
 
 class DragDropGUI:
-    """Main GUI class that coordinates all components"""
+    """Main GUI class that coordinates all handlers"""
 
     def __init__(self, root):
         # Set CustomTkinter appearance before doing anything else
@@ -63,8 +65,6 @@ class DragDropGUI:
             self.root = root
 
         self.root.title("Gemini SRT Translator")
-        self.processing_thread = None
-        self.cancel_event = threading.Event()
         self.image_label = None
 
         # Enhanced icon loading with multiple fallback paths
@@ -107,14 +107,17 @@ class DragDropGUI:
         # Initialize UI
         self._setup_ui()
 
-        # Setup drag & drop
-        self.setup_drag_drop()
-
         # Additional settings for macOS to ensure window is in front
         self.root.after(100, self.ensure_front)
 
         # Log configuration after UI is ready
         self.root.after(200, self.log_config_loaded)
+
+        from gst_gui.handlers.translation_handler import TranslationManager
+        self.translation_manager = TranslationManager(
+            cli_runner=self.cli_runner,
+            main_window=self
+        )
 
     def _load_window_icon(self):
         """Load window icon with multiple fallback paths"""
@@ -188,7 +191,7 @@ class DragDropGUI:
         # Use scrollable_frame as the main container
         self.main_frame = self.scrollable_frame
 
-        # Create UI components (they'll now be inside the scrollable frame)
+        # Create UI handlers (they'll now be inside the scrollable frame)
         self._create_drop_area()
         self._create_treeview()
         self._create_console()
@@ -202,13 +205,11 @@ class DragDropGUI:
         self.root.after(500, self._manage_scrollbar_visibility)
 
     def _create_drop_area(self):
-        """Create the drag & drop area"""
-        # Drag & drop area using CustomTkinter frame
+        # Create the drop frame
         self.drop_frame = ctk.CTkFrame(self.main_frame, height=120, corner_radius=10)
         self.drop_frame.pack(fill="x", pady=(0, 20))
-        self.drop_frame.pack_propagate(False)
 
-        # Label in drop area
+        # Create the label
         self.drop_label = ctk.CTkLabel(
             self.drop_frame,
             text="📁 Drag files or folders here\n\nOr click to browse",
@@ -217,9 +218,12 @@ class DragDropGUI:
         )
         self.drop_label.pack(expand=True)
 
-        # Bind click to file selection
-        self.drop_label.bind("<Button-1>", self.browse_file)
-        self.drop_frame.bind("<Button-1>", self.browse_file)
+        # Initialize the drop area handler
+        self.drop_handler = DropAreaHandler(
+            widget=self.drop_frame,
+            logger=self.log_to_console,
+            on_file_callback=self.process_dropped_item
+        )
 
     def _create_treeview(self):
         """Create the TreeView for file pairs"""
@@ -578,15 +582,14 @@ class DragDropGUI:
 
     def _create_action_buttons(self):
         """Create action buttons"""
-        # Buttons frame with reduced margins
         self.buttons_frame = ctk.CTkFrame(self.main_frame)
-        self.buttons_frame.pack(fill="x", pady=(0, 10))  # Reduced from (0, 20) to (0, 10)
+        self.buttons_frame.pack(fill="x", pady=(0, 10))
 
         # Translate Button
         self.translate_button = ctk.CTkButton(
             self.buttons_frame,
             text="🌐 TRANSLATE",
-            command=self.start_translation,
+            command=self._start_translation,  # New simplified method
             font=ctk.CTkFont(size=16, weight="bold"),
             height=50,
             fg_color=("green", "darkgreen"),
@@ -594,16 +597,70 @@ class DragDropGUI:
         )
         self.translate_button.pack(fill="x", padx=20, pady=10)
 
-        # Cancel Button (initially hidden)
+        # Cancel Button
         self.cancel_button = ctk.CTkButton(
             self.buttons_frame,
             text="❌ CANCEL",
-            command=self.cancel_translation,
+            command=self._cancel_translation,  # New simplified method
             font=ctk.CTkFont(size=16, weight="bold"),
             height=50,
             fg_color=("red", "darkred"),
             hover_color=("lightcoral", "red")
         )
+
+    def _start_translation(self):
+        """Start translation using translation manager"""
+        selected_pairs = self.get_selected_pairs()
+        if not selected_pairs:
+            messagebox.showwarning("Warning",
+                                   "No pairs selected for translation.")
+            return
+
+        config = self._get_current_config()
+        self.translation_manager.start_translation(selected_pairs, config)
+
+    def _cancel_translation(self):
+        """Cancel translation using translation manager"""
+        self.translation_manager.cancel_translation()
+
+    def _get_current_config(self):
+        """Get current configuration as dictionary"""
+        return {
+            'gemini_api_key': self.gemini_api_key.get(),
+            'model': self.model.get(),
+            'tmdb_api_key': self.tmdb_api_key.get(),
+            'tmdb_id': self.tmdb_id.get(),
+            'language': self.language.get(),
+            'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
+            'extract_audio': self.extract_audio.get(),
+            'overview': self.overview.get() if hasattr(self, 'overview') else '',
+            'movie_title': self._get_movie_title_from_treeview(),
+            'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
+            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True
+        }
+
+    # Keep these methods for the translation manager to call:
+    def show_cancel_button(self):
+        """Show cancel button and hide translate button"""
+        self.translate_button.pack_forget()
+        self.cancel_button.pack(fill="x", padx=20, pady=10)
+
+    def show_translate_button(self):
+        """Show translate button and hide cancel button"""
+        self.cancel_button.pack_forget()
+        self.translate_button.pack(fill="x", padx=20, pady=10)
+
+    def _hide_dropdown_menus(self):
+        """Hide both API and Settings dropdown menus"""
+        if self.api_expanded.get():
+            self.api_options_frame.pack_forget()
+            self.expand_api_button.configure(text="▶ Show API options")
+            self.api_expanded.set(False)
+
+        if self.settings_expanded.get():
+            self.settings_options_frame.pack_forget()
+            self.expand_settings_button.configure(text="▶ Settings")
+            self.settings_expanded.set(False)
 
     def _create_status_bar(self):
         """Create status bar"""
@@ -705,15 +762,6 @@ class DragDropGUI:
         # Update scrollbar visibility after layout change
         self.root.after(100, self._manage_scrollbar_visibility)
 
-    def show_cancel_button(self):
-        """Show cancel button and hide translate button"""
-        self.translate_button.pack_forget()
-        self.cancel_button.pack(fill="x", padx=20, pady=10)
-
-    def show_translate_button(self):
-        """Show translate button and hide cancel button"""
-        self.cancel_button.pack_forget()
-        self.translate_button.pack(fill="x", padx=20, pady=10)
 
     def load_image(self, url, width=100, height=150):
         """Load and display image using CTkImage for proper scaling"""
@@ -740,48 +788,24 @@ class DragDropGUI:
             print(f"Error loading image: {e}")
             self.image_label.configure(text="Image not available", image=None)
 
-    # Keep all the original methods for functionality
-    def cancel_translation(self):
-        """Cancel the current translation process"""
-        if self.processing_thread and self.processing_thread.is_alive():
-            self.log_to_console("🛑 Cancelling processing...")
-            self.cancel_event.set()
-
-            # Show cancellation status
-            self.status_var.set("Cancelling...")
-
-            # Wait for thread to finish (max 5 seconds)
-            self.processing_thread.join(timeout=5.0)
-
-            if self.processing_thread.is_alive():
-                self.log_to_console("⚠️ Force terminating process...")
-
-            self.log_to_console("✅ Processing has been cancelled")
-            self.status_var.set("Cancelled")
-
-            # Restore translate button
-            self.show_translate_button()
-        else:
-            self.log_to_console("ℹ️ No active processing to cancel")
-
     def on_closing(self):
         """Handle window closing event"""
-        if self.processing_thread and self.processing_thread.is_alive():
+        # Check if translation is running using the translation manager
+        if self.translation_manager.is_running():
             if messagebox.askyesno("Cancel processing",
                                    "Processing subtitles...\n"
                                    "Do you want to stop?"):
-                self.log_to_console("🛑 Cancelling processing...")
-                self.cancel_event.set()
-
-                self.processing_thread.join(timeout=3.0)
-
-                if self.processing_thread.is_alive():
-                    self.log_to_console("⚠️ Force close...")
+                # Use translation manager to cancel (handles all threading complexity)
+                self.translation_manager.cancel_translation()
             else:
+                # User chose not to stop - don't close the window
                 return
 
+        # Save configuration before closing
         self.save_current_config()
         self.log_to_console("💾 Configuration saved")
+
+        # Close the window after a short delay
         self.root.after(100, self.root.destroy)
 
     def save_current_config(self):
@@ -836,114 +860,21 @@ class DragDropGUI:
         except tk.TclError:
             pass
 
-    def setup_drag_drop(self):
-        """Configure drag & drop handling"""
-        try:
-            from tkinterdnd2 import TkinterDnD, DND_FILES
-
-            # Try to initialize TkinterDnD
-            try:
-                self.root.tk.call('package', 'require', 'tkdnd')
-            except tk.TclError:
-                try:
-                    TkinterDnD._require(self.root)
-                except:
-                    raise ImportError("TkinterDnD2 cannot be initialized")
-
-            # Configure drag & drop
-            self.drop_frame.drop_target_register(DND_FILES)
-            self.drop_frame.dnd_bind('<<Drop>>', self.handle_drop)
-            self.root.title("Gemini SRT Translator")
-            self.log_to_console("✅ Drag & Drop enabled - you can drag files!")
 
         except (ImportError, tk.TclError, Exception) as e:
             self.log_to_console(f"ℹ️  Drag & Drop unavailable: {type(e).__name__}")
             self.log_to_console("🖱️  Use button to select file")
             self.log_to_console("💡 Try: pip uninstall tkinterdnd2 && pip install tkinterdnd2")
 
-    def handle_drop(self, event):
-        """Handle drop event from TkinterDnD2"""
-        files_data = event.data
-        self.log_to_console(f"🔍 Debug - raw data: {repr(files_data)}")
-
-        if not files_data:
-            return
-
-        file_path = self._parse_dropped_file_path(files_data)
-
-        if file_path and Path(file_path).exists():
-            self.process_dropped_item(file_path)
-        else:
-            self.log_to_console(f"❌ Cannot find or parse file path")
-            messagebox.showerror("Error", f"Cannot find file:\n{files_data}")
-
-    def _parse_dropped_file_path(self, files_data):
-        """Parse file path from dropped data"""
-        # Handle different data formats
-        file_path = None
-
-        # Format with curly braces: {/path/with spaces/file.txt}
-        if files_data.startswith('{') and files_data.endswith('}'):
-            file_path = files_data.strip('{}')
-        # Format with quotes: "/path/with spaces/file.txt"
-        elif files_data.startswith('"') and files_data.endswith('"'):
-            file_path = files_data.strip('"')
-        # Multi-line data - take first line
-        elif '\n' in files_data:
-            lines = files_data.strip().split('\n')
-            if lines:
-                first_line = lines[0]
-                file_path = first_line.strip('{}').strip('"')
-        # List of files separated by spaces
-        elif files_data.count(' ') > 0:
-            if files_data.startswith('/') or files_data[1:3] == ':\\':  # Unix or Windows path
-                file_path = files_data.strip()
-            else:
-                parts = files_data.split()
-                if parts:
-                    file_path = parts[0].strip('{}').strip('"')
-        else:
-            file_path = files_data.strip()
-
-        return file_path
-
-    def browse_file(self, event=None):
-        """Open file/folder selection dialog"""
-        from tkinter import filedialog
-
-        choice = messagebox.askyesnocancel("Selection",
-                                           "Yes = File\nNo = Folder\nCancel = Exit")
-
-        if choice is None:
-            return
-        elif choice:  # File
-            file_path = filedialog.askopenfilename(
-                title="Select file",
-                filetypes=[("All files", "*.*")]
-            )
-        else:  # Folder
-            file_path = filedialog.askdirectory(title="Select folder")
-
-        if file_path:
-            self.process_dropped_item(file_path)
-
     def process_dropped_item(self, path):
-        """Process dropped/selected item"""
-        path = Path(path)
-
-        if not path.exists():
-            messagebox.showerror("Error", f"Path does not exist: {path}")
-            return
-
+        """Process dropped/selected item (called by DropAreaHandler)"""
+        # path is already validated by the handler, so we can trust it exists
         self.log_to_console(f"Processing: {path}")
 
         if path.is_file():
             self._process_single_file(path)
         elif path.is_dir():
             self._process_folder(path)
-        else:
-            self.log_to_console("Unknown item type")
-            messagebox.showwarning("Warning", "Unknown item type")
 
     def _detect_tv_series_pattern(self, filename):
         """
@@ -1322,161 +1253,14 @@ class DragDropGUI:
                 if len(values) >= 2:
                     subtitle_file = values[0] if values[0] != "None" else None
                     video_file = values[1] if values[1] != "None" else None
+                    folder = values[4] if values[4] != "None" else ""
                     selected_pairs.append({
                         'subtitle': subtitle_file,
-                        'video': video_file
+                        'video': video_file,
+                        'folder': folder
                     })
 
         return selected_pairs
-
-    def start_translation(self):
-        """Start translation process with selected pairs"""
-        # Hide dropdown menus when starting translation
-        self._hide_dropdown_menus()
-
-        # Debug: check what's in TreeView
-        self.log_to_console("🔍 Debug - checking TreeView...")
-        total_items = len(self.tree.get_children())
-        self.log_to_console(f"Total items in TreeView: {total_items}")
-
-        if total_items == 0:
-            messagebox.showwarning("Warning", "TreeView is empty. First drag a folder with files.")
-            return
-
-        # Get selected pairs
-        selected_pairs = self.get_selected_pairs()
-
-        if not selected_pairs:
-            messagebox.showwarning("Warning",
-                                   "No pairs selected for translation.\nMake sure items have ☑️ checkmark")
-            return
-
-        # Filter pairs based on extract audio setting
-        valid_pairs = selected_pairs
-
-        if not valid_pairs:
-            extract_audio = self.extract_audio.get()
-            if extract_audio:
-                messagebox.showwarning("Warning",
-                                       "No pairs with both subtitles and video found.\nSelect pairs that have both files, or disable 'Extract audio' to process subtitle-only files.")
-            else:
-                messagebox.showwarning("Warning",
-                                       "No pairs with subtitle files found.\nSelect pairs that have subtitle files.")
-            return
-
-        # Show confirmation and start processing
-        if self._confirm_translation(valid_pairs, len(selected_pairs)):
-            self.save_current_config()
-            self._run_translation_async(valid_pairs)
-
-    def _hide_dropdown_menus(self):
-        """Hide both API and Settings dropdown menus"""
-        # Hide API options if expanded
-        if self.api_expanded.get():
-            self.api_options_frame.pack_forget()
-            self.expand_api_button.configure(text="▶ Show API options")
-            self.api_expanded.set(False)
-
-        # Hide Settings options if expanded
-        if self.settings_expanded.get():
-            self.settings_options_frame.pack_forget()
-            self.expand_settings_button.configure(text="▶ Settings")
-            self.settings_expanded.set(False)
-
-    def _confirm_translation(self, valid_pairs, total_selected):
-        """Show confirmation dialog for translation"""
-        checked_count = len(valid_pairs)
-        extract_audio = self.extract_audio.get()
-
-        if extract_audio:
-            confirmation_msg = f"Start processing {checked_count} pairs with subtitles and video for audio extraction?\n"
-        else:
-            confirmation_msg = f"Start processing {checked_count} subtitle files?\n"
-
-        confirmation_msg += f"(Selected {total_selected}, {checked_count} are valid for current settings)\n\n"
-
-        if extract_audio:
-            confirmation_msg += "Files to process:\n" + "\n".join([
-                f"• {pair['subtitle']} + {pair['video']}"
-                for pair in valid_pairs[:5]  # Show first 5
-            ]) + (f"\n... and {checked_count - 5} more" if checked_count > 5 else "")
-        else:
-            confirmation_msg += "Subtitle files to process:\n" + "\n".join([
-                f"• {pair['subtitle']}"
-                for pair in valid_pairs[:5]  # Show first 5
-            ]) + (f"\n... and {checked_count - 5} more" if checked_count > 5 else "")
-
-        return messagebox.askyesno("Translation confirmation", confirmation_msg)
-
-    def _run_translation_async(self, valid_pairs):
-        """Run translation in separate thread"""
-
-        def run_translation():
-            try:
-                self.status_var.set("Processing...")
-                self.log_to_console("🚀 Starting processing...")
-                self.log_to_console(f"📊 Processing {len(valid_pairs)} pairs")
-                self.log_to_console("─" * 50)
-
-                # Build full paths for pairs
-                full_path_pairs = []
-                for pair in valid_pairs:
-                    full_pair = {}
-                    if pair['subtitle']:
-                        full_pair['subtitle'] = self.current_folder_path / pair['subtitle']
-                    else:
-                        full_pair['subtitle'] = None
-
-                    if pair['video']:
-                        full_pair['video'] = self.current_folder_path / pair['video']
-                    else:
-                        full_pair['video'] = None
-
-                    full_path_pairs.append(full_pair)
-
-                # Get current configuration
-                config = {
-                    'gemini_api_key': self.gemini_api_key.get(),
-                    'model': self.model.get(),
-                    'tmdb_api_key': self.tmdb_api_key.get(),
-                    'tmdb_id': self.tmdb_id.get(),
-                    'language': self.language.get(),
-                    'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
-                    'extract_audio': self.extract_audio.get(),
-                    'overview': self.overview.get() if hasattr(self, 'overview') else '',
-                    'movie_title': self._get_movie_title_from_treeview(),
-                    'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
-                    'cancel_event': self.cancel_event,
-                    'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True
-                }
-
-                # Run translation using CLI runner
-                success = self.cli_runner.run_translation_batch(full_path_pairs, config)
-
-                if self.cancel_event.is_set():
-                    self.root.after(0, lambda: self.status_var.set("Cancelled"))
-                    self.root.after(0, lambda: self.log_to_console("🛑 Processing cancelled"))
-                elif success:
-                    self.root.after(0, lambda: self.status_var.set("Processing completed successfully"))
-                else:
-                    self.root.after(0, lambda: self.status_var.set("Processing completed with errors"))
-
-            except Exception as e:
-                error_msg = f"Error during processing: {e}"
-                self.root.after(0, lambda: self.log_to_console(error_msg))
-                self.root.after(0, lambda: self.status_var.set("Processing error"))
-            finally:
-                self.root.after(0, self.show_translate_button)
-                self.cancel_event.clear()
-
-        self.show_cancel_button()
-
-        # Reset cancel event before starting
-        self.cancel_event.clear()
-
-        # Run in separate thread
-        self.processing_thread = threading.Thread(target=run_translation, daemon=True)
-        self.processing_thread.start()
 
     def fetch_tmdb_info(self):
         """Fetch TMDB info using the TMDB ID in the field"""
