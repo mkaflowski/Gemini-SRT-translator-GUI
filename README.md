@@ -2,9 +2,7 @@
 
 A powerful GUI application for translating SRT subtitle files using Google's Gemini AI. This is a user-friendly graphical interface for the [Gemini SRT Translator](https://github.com/MaKTaiL/gemini-srt-translator) command-line tool, featuring automatic movie/TV series detection, TMDB integration for context, and intelligent batch processing.
 
-
-<img src="https://github.com/user-attachments/assets/4e4d89b5-09c2-4fb7-a740-4db563a3fadc" width="75%" />
-
+<img src="https://github.com/user-attachments/assets/0298d098-f201-4d9b-b50d-8acccfd6c525" width="75%" />
 
 ## ✨ Features
 
