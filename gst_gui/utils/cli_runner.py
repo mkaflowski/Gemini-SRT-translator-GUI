@@ -337,7 +337,7 @@ class CLIRunner:
             self.log(f"   ⚠️ No Gemini API key provided")
 
         # Add model
-        model = config.get('model', 'gemini-2.0-flash')
+        model = config.get('model', 'gemini-2.5-flash')
         cmd.extend(['--model', model])
         self.log(f"   🤖 Model: {model}")
 

@@ -14,7 +14,7 @@ class TranslationConfig:
     def __init__(self, **kwargs):
         # API Configuration
         self.gemini_api_key = kwargs.get('gemini_api_key', '')
-        self.model = kwargs.get('model', 'gemini-2.0-flash')
+        self.model = kwargs.get('model', 'gemini-2.5-flash')
         self.tmdb_api_key = kwargs.get('tmdb_api_key', '')
         self.tmdb_id = kwargs.get('tmdb_id', '')
 

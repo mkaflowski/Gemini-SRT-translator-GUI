@@ -488,7 +488,7 @@ class DragDropGUI:
             row1_frame,
             variable=self.model,
             width=250,
-            values=["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]
+            values=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]
         )
         self.model_combo.pack(side="left", padx=(0, 10))
 
@@ -812,7 +812,7 @@ class DragDropGUI:
         """Save current configuration to config manager"""
         config_updates = {
             'gemini_api_key': self.gemini_api_key.get() if hasattr(self, 'gemini_api_key') else '',
-            'model': self.model.get() if hasattr(self, 'model') else 'gemini-2.0-flash',
+            'model': self.model.get() if hasattr(self, 'model') else 'gemini-2.5-flash',
             'tmdb_api_key': self.tmdb_api_key.get() if hasattr(self, 'tmdb_api_key') else '',
             'tmdb_id': self.tmdb_id.get() if hasattr(self, 'tmdb_id') else '',
             'api_expanded': self.api_expanded.get() if hasattr(self, 'api_expanded') else False,

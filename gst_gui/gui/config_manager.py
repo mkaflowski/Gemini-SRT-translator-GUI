@@ -15,7 +15,7 @@ class ConfigManager:
         self.config = {}
         self._default_config = {
             'gemini_api_key': '',
-            'model': 'gemini-2.0-flash',
+            'model': 'gemini-2.5-flash',
             'tmdb_api_key': '',
             'tmdb_id': '',
             'api_expanded': False,
@@ -112,24 +112,6 @@ class ConfigManager:
             'extract_audio': self.get('extract_audio', False),
             'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True)
         }
-
-    def validate_config(self):
-        """Validate current configuration and return any issues"""
-        issues = []
-
-        if not self.has_gemini_api_key():
-            issues.append("Gemini API key is missing")
-
-        model = self.get('model', '')
-        valid_models = ["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]
-        if model not in valid_models:
-            issues.append(f"Invalid model: {model}")
-
-        language = self.get('language', '')
-        if not language.strip():
-            issues.append("Language is not set")
-
-        return issues
 
     def reset_to_defaults(self):
         """Reset configuration to default values"""
