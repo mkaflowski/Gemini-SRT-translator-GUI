@@ -5,17 +5,20 @@ Handles loading, saving, and managing application settings.
 
 import json
 from pathlib import Path
+import os
 
 
 class ConfigManager:
     """Manages application configuration persistence"""
 
-    def __init__(self, config_file="gui_config.json"):
-        self.config_file = Path(config_file)
+    def __init__(self, app_name="SubtitleGenerator", config_file="gui_config.json"):
+        self.app_name = app_name
+        self.config_dir = self._get_config_dir()
+        self.config_file = self.config_dir / config_file
         self.config = {}
         self._default_config = {
             'gemini_api_key': '',
-            'model': 'gemini-2.5-flash',
+            'model': 'gemini-2.0-flash',
             'tmdb_api_key': '',
             'tmdb_id': '',
             'api_expanded': False,
@@ -23,10 +26,45 @@ class ConfigManager:
             'language': 'Polish',
             'language_code': 'pl',
             'extract_audio': False,
-            'auto_fetch_tmdb': True,  # Auto-fetch TMDB ID when files are loaded
-            'is_tv_series': False     # Whether TMDB ID is for TV series or movie
+            'auto_fetch_tmdb': True,
+            'is_tv_series': False
         }
+        self._ensure_config_dir()
         self.load_config()
+
+    def _get_config_dir(self):
+        """Get platform-specific configuration directory"""
+        if os.name == 'nt':  # Windows
+            base = os.getenv('APPDATA')
+            if not base:
+                base = Path.home() / 'AppData' / 'Roaming'
+            else:
+                base = Path(base)
+        elif os.name == 'posix':  # macOS and Linux
+            if os.uname().sysname == 'Darwin':  # macOS
+                base = Path.home() / 'Library' / 'Application Support'
+            else:  # Linux
+                base = os.getenv('XDG_CONFIG_HOME')
+                if not base:
+                    base = Path.home() / '.config'
+                else:
+                    base = Path(base)
+        else:
+            # Fallback to home directory
+            base = Path.home() / '.config'
+
+        print(f'Config file saved in {base / self.app_name}')
+        return base / self.app_name
+
+    def _ensure_config_dir(self):
+        """Create configuration directory if it doesn't exist"""
+        try:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"Error creating configuration directory: {e}")
+            # Fallback to current directory
+            self.config_dir = Path.cwd()
+            self.config_file = self.config_dir / "gui_config.json"
 
     def load_config(self):
         """Load configuration from JSON file"""
@@ -110,8 +148,27 @@ class ConfigManager:
             'has_tmdb_id': self.has_tmdb_id(),
             'language': self.get('language', 'Polish'),
             'extract_audio': self.get('extract_audio', False),
-            'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True)
+            'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True),
+            'config_location': str(self.config_file)
         }
+
+    def validate_config(self):
+        """Validate current configuration and return any issues"""
+        issues = []
+
+        if not self.has_gemini_api_key():
+            issues.append("Gemini API key is missing")
+
+        model = self.get('model', '')
+        valid_models = ["gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-2.5-pro-preview-06-05"]
+        if model not in valid_models:
+            issues.append(f"Invalid model: {model}")
+
+        language = self.get('language', '')
+        if not language.strip():
+            issues.append("Language is not set")
+
+        return issues
 
     def reset_to_defaults(self):
         """Reset configuration to default values"""
@@ -138,3 +195,7 @@ class ConfigManager:
         except Exception as e:
             print(f"Error importing configuration: {e}")
             return False
+
+    def get_config_path(self):
+        """Get the full path to the configuration file"""
+        return str(self.config_file)
