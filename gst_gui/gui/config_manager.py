@@ -27,7 +27,8 @@ class ConfigManager:
             'language_code': 'pl',
             'extract_audio': False,
             'auto_fetch_tmdb': True,
-            'is_tv_series': False
+            'is_tv_series': False,
+            'translation_type': 'Default'
         }
         self._ensure_config_dir()
         self.load_config()
@@ -124,7 +125,8 @@ class ConfigManager:
             'extract_audio': self.get('extract_audio', False),
             'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True),
             'language_code': self.get('language_code', True),
-            'tmdb_id': self.get('tmdb_id', '')
+            'tmdb_id': self.get('tmdb_id', ''),
+            'translation_type': self.get('translation_type', 'Default')
         }
 
     def has_gemini_api_key(self):
