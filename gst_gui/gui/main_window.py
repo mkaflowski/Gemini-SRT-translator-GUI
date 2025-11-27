@@ -481,6 +481,19 @@ class DragDropGUI:
         self.gemini_entry = ctk.CTkEntry(row1_frame, textvariable=self.gemini_api_key, show="*", width=300)
         self.gemini_entry.pack(side="left", padx=(0, 20))
 
+        row1_5_frame = ctk.CTkFrame(self.api_options_frame)
+        row1_5_frame.pack(fill="x", padx=10, pady=(5, 5))
+
+        ctk.CTkLabel(row1_5_frame, text="Gemini API Key 2 (optional):").pack(side="left", padx=(10, 5))
+        self.gemini_api_key2 = tk.StringVar(value=api_config.get('gemini_api_key2', ''))
+        self.gemini_entry2 = ctk.CTkEntry(row1_5_frame, textvariable=self.gemini_api_key2, show="*", width=300)
+        self.gemini_entry2.pack(side="left", padx=(0, 20))
+
+        # Info label for second key
+        info_label = ctk.CTkLabel(row1_5_frame, text="ℹ️ Used as fallback", text_color="gray",
+                                  font=ctk.CTkFont(size=10))
+        info_label.pack(side="left", padx=(0, 10))
+
         # Model
         ctk.CTkLabel(row1_frame, text="Model:").pack(side="left", padx=(10, 5))
         self.model = tk.StringVar(value=api_config['model'])
@@ -627,6 +640,7 @@ class DragDropGUI:
         """Get current configuration as dictionary"""
         return {
             'gemini_api_key': self.gemini_api_key.get(),
+            'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
             'model': self.model.get(),
             'tmdb_api_key': self.tmdb_api_key.get(),
             'tmdb_id': self.tmdb_id.get(),
@@ -812,6 +826,7 @@ class DragDropGUI:
         """Save current configuration to config manager"""
         config_updates = {
             'gemini_api_key': self.gemini_api_key.get() if hasattr(self, 'gemini_api_key') else '',
+            'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
             'model': self.model.get() if hasattr(self, 'model') else 'gemini-2.5-flash',
             'tmdb_api_key': self.tmdb_api_key.get() if hasattr(self, 'tmdb_api_key') else '',
             'tmdb_id': self.tmdb_id.get() if hasattr(self, 'tmdb_id') else '',
@@ -836,6 +851,8 @@ class DragDropGUI:
             self.log_to_console("💾 Configuration loaded:")
             self.log_to_console(f"   🤖 Model: {summary['model']}")
             self.log_to_console(f"   🔑 Gemini API: {'✅ Saved' if summary['has_gemini_key'] else '❌ Missing'}")
+            self.log_to_console(
+                f"   🔑 Gemini API Key 2: {'✅ Saved' if hasattr(self, 'gemini_api_key2') and self.gemini_api_key2.get().strip() else '❌ Not configured (optional)'}")
             self.log_to_console(f"   🎬 TMDB API: {'✅ Saved' if summary['has_tmdb_key'] else '❌ Missing (optional)'}")
             self.log_to_console(f"   🆔 TMDB ID: {'✅ Saved' if summary['has_tmdb_id'] else '❌ Missing (optional)'}")
             self.log_to_console(f"   🌐 Language: {summary['language']}")

@@ -15,6 +15,7 @@ class ConfigManager:
         self.config = {}
         self._default_config = {
             'gemini_api_key': '',
+            'gemini_api_key2': '',
             'model': 'gemini-2.5-flash',
             'tmdb_api_key': '',
             'tmdb_id': '',
@@ -27,6 +28,10 @@ class ConfigManager:
             'is_tv_series': False     # Whether TMDB ID is for TV series or movie
         }
         self.load_config()
+
+    def has_gemini_api_key2(self):
+        """Check if second Gemini API key is configured"""
+        return bool(self.get('gemini_api_key2', '').strip())
 
     def load_config(self):
         """Load configuration from JSON file"""
@@ -68,6 +73,7 @@ class ConfigManager:
         """Get API-related configuration"""
         return {
             'gemini_api_key': self.get('gemini_api_key', ''),
+            'gemini_api_key2': self.get('gemini_api_key2', ''),
             'model': self.get('model', 'gemini-pro'),
             'tmdb_api_key': self.get('tmdb_api_key', '')
         }
@@ -106,6 +112,7 @@ class ConfigManager:
         return {
             'model': self.get('model', 'gemini-pro'),
             'has_gemini_key': self.has_gemini_api_key(),
+            'has_gemini_key2': self.has_gemini_api_key2(),
             'has_tmdb_key': self.has_tmdb_api_key(),
             'has_tmdb_id': self.has_tmdb_id(),
             'language': self.get('language', 'Polish'),

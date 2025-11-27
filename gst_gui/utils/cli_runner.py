@@ -336,6 +336,11 @@ class CLIRunner:
         else:
             self.log(f"   ⚠️ No Gemini API key provided")
 
+        gemini_api_key2 = config.get('gemini_api_key2', '').strip()
+        if gemini_api_key2:
+            cmd.extend(['-k2', gemini_api_key2])
+            self.log(f"   🔑 Using second Gemini API key (fallback)")
+
         # Add model
         model = config.get('model', 'gemini-2.5-flash')
         cmd.extend(['--model', model])
