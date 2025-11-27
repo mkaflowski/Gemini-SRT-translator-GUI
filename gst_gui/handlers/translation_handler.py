@@ -32,6 +32,8 @@ class TranslationConfig:
         # Control
         self.cancel_event = kwargs.get('cancel_event', None)
 
+        self.translation_type = kwargs.get('translation_type', 'Default')
+
     def validate(self):
         """
         Validate configuration for translation
@@ -64,7 +66,8 @@ class TranslationConfig:
             'movie_title': self.movie_title,
             'is_tv_series': self.is_tv_series,
             'cancel_event': self.cancel_event,
-            'add_translator_info': self.add_translator_info
+            'add_translator_info': self.add_translator_info,
+            'translation_type': self.translation_type,
         }
 
 

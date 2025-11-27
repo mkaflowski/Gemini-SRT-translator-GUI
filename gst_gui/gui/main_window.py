@@ -549,6 +549,19 @@ class DragDropGUI:
         self.tmdb_id_entry = ctk.CTkEntry(row2_frame, textvariable=self.tmdb_id, width=120)
         self.tmdb_id_entry.pack(side="left", padx=(0, 10))
 
+        row2_5_frame = ctk.CTkFrame(self.settings_options_frame)
+        row2_5_frame.pack(fill="x", padx=10, pady=(5, 5))
+
+        ctk.CTkLabel(row2_5_frame, text="Translation type:").pack(side="left", padx=(10, 5))
+        self.translation_type = tk.StringVar(value=processing_config.get('translation_type', 'Default'))
+        self.translation_type_combo = ctk.CTkComboBox(
+            row2_5_frame,
+            variable=self.translation_type,
+            width=180,
+            values=["Default", "Concise translation"]
+        )
+        self.translation_type_combo.pack(side="left", padx=(0, 10))
+
         # Fetch TMDB info button
         self.fetch_tmdb_button = ctk.CTkButton(
             row2_frame,
@@ -650,7 +663,8 @@ class DragDropGUI:
             'overview': self.overview.get() if hasattr(self, 'overview') else '',
             'movie_title': self._get_movie_title_from_treeview(),
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
-            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True
+            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
+            'translation_type': self.translation_type.get() if hasattr(self, 'translation_type') else 'Default',
         }
 
     # Keep these methods for the translation manager to call:
@@ -837,7 +851,8 @@ class DragDropGUI:
             'extract_audio': self.extract_audio.get() if hasattr(self, 'extract_audio') else False,
             'auto_fetch_tmdb': self.auto_fetch_tmdb.get() if hasattr(self, 'auto_fetch_tmdb') else True,
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
-            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True
+            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
+            'translation_type': self.translation_type.get() if hasattr(self, 'translation_type') else 'Default',
         }
 
         self.config_manager.update(config_updates)

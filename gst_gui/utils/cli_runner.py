@@ -356,6 +356,20 @@ class CLIRunner:
         movie_title = config.get('movie_title', '').strip()
         is_tv_series = config.get('is_tv_series', False)
 
+        additional_tranlation_info = ""
+        translation_type = config.get('translation_type', 'Default')
+        if translation_type == 'Concise translation':
+            self.log(f"   📝 Translation type: Concise")
+            additional_tranlation_info = """ IMPORTANT:
+            1. Keep sentences as short and clear as possible while preserving the full sense.
+            2. Focus on meaning, not word-for-word translation.
+            3. Remove filler words, repetitions, and unnecessary expressions (e.g., “uhm,” “well,” “you know,” etc.).
+            4. Maintain a natural tone and make the translation easy to read.
+            5. If a sentence can be expressed more briefly without losing meaning, shorten it.
+            """
+        else:
+            self.log(f"   📝 Translation type: Default")
+
         if overview and movie_title:
             # Format description with content type and title
             content_type = "TV series" if is_tv_series else "movie"
@@ -366,7 +380,7 @@ class CLIRunner:
             4. Sentence breaks: If a sentence continues on the next line, maintain proper spacing between the end of one line and the beginning of the next.
             """
 
-            description = f"{translation_prompt} It is a {content_type} called {movie_title}. Description: {overview}"
+            description = f"{translation_prompt}{additional_tranlation_info} It is a {content_type} called {movie_title}. Description: {overview}"
             cmd.extend(['--description', description])
             self.log(f"   📄 Description: It is a {content_type} called {movie_title}...")
         elif overview:
