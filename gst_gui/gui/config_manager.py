@@ -5,13 +5,25 @@ Handles loading, saving, and managing application settings.
 
 import json
 from pathlib import Path
+import platform
 
 
 class ConfigManager:
     """Manages application configuration persistence"""
 
-    def __init__(self, config_file="gui_config.json"):
-        self.config_file = Path(config_file)
+    def __init__(self, config_file=None):
+        """
+        Initialize config manager.
+        If config_file is not provided, uses platform-specific user config directory.
+        """
+        if config_file is None:
+            self.config_file = self._get_config_path()
+        else:
+            self.config_file = Path(config_file)
+
+        # Ensure config directory exists
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+
         self.config = {}
         self._default_config = {
             'gemini_api_key': '',
@@ -24,12 +36,32 @@ class ConfigManager:
             'language': 'Polish',
             'language_code': 'pl',
             'extract_audio': False,
-            'auto_fetch_tmdb': True,  # Auto-fetch TMDB ID when files are loaded
-            'is_tv_series': False,    # Whether TMDB ID is for TV series or movie
+            'auto_fetch_tmdb': True,
+            'is_tv_series': False,
             'translation_type': 'Default',
             'add_translator_info': True
         }
         self.load_config()
+        print(f"📁 Config file: {self.config_file}")
+
+    @staticmethod
+    def _get_config_path():
+        """
+        Get platform-specific config directory path.
+        - Windows: %APPDATA%\Gemini-SRT-Translator\
+        - macOS: ~/Library/Application Support/Gemini-SRT-Translator/
+        - Linux: ~/.config/gemini-srt-translator/
+        """
+        system = platform.system()
+
+        if system == "Windows":
+            config_dir = Path.home() / "AppData" / "Roaming" / "Gemini-SRT-Translator"
+        elif system == "Darwin":  # macOS
+            config_dir = Path.home() / "Library" / "Application Support" / "Gemini-SRT-Translator"
+        else:  # Linux and others
+            config_dir = Path.home() / ".config" / "gemini-srt-translator"
+
+        return config_dir / "gui_config.json"
 
     def has_gemini_api_key2(self):
         """Check if second Gemini API key is configured"""
@@ -43,10 +75,12 @@ class ConfigManager:
                     loaded_config = json.load(f)
                     # Merge with defaults to ensure all keys exist
                     self.config = {**self._default_config, **loaded_config}
+                    print(f"✅ Configuration loaded from: {self.config_file}")
             else:
                 self.config = self._default_config.copy()
+                print(f"ℹ️ No existing config, using defaults")
         except Exception as e:
-            print(f"Error loading configuration: {e}")
+            print(f"⚠️ Error loading configuration: {e}")
             self.config = self._default_config.copy()
 
     def save_config(self):
@@ -54,9 +88,10 @@ class ConfigManager:
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
+            print(f"✅ Configuration saved to: {self.config_file}")
             return True
         except Exception as e:
-            print(f"Error saving configuration: {e}")
+            print(f"❌ Error saving configuration: {e}")
             return False
 
     def get(self, key, default=None):
@@ -96,8 +131,8 @@ class ConfigManager:
             'language_code': self.get('language_code', 'pl'),
             'tmdb_id': self.get('tmdb_id', ''),
             'is_tv_series': self.get('is_tv_series', False),
-            'translation_type': self.get('translation_type', 'Default'),  # Added
-            'add_translator_info': self.get('add_translator_info', True)  # Added
+            'translation_type': self.get('translation_type', 'Default'),
+            'add_translator_info': self.get('add_translator_info', True)
         }
 
     def has_gemini_api_key(self):
@@ -136,7 +171,7 @@ class ConfigManager:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
             return True
         except Exception as e:
-            print(f"Error exporting configuration: {e}")
+            print(f"❌ Error exporting configuration: {e}")
             return False
 
     def import_config(self, file_path):
@@ -146,7 +181,12 @@ class ConfigManager:
                 imported_config = json.load(f)
                 # Validate and merge with defaults
                 self.config = {**self._default_config, **imported_config}
+            print(f"✅ Configuration imported from: {file_path}")
             return True
         except Exception as e:
-            print(f"Error importing configuration: {e}")
+            print(f"❌ Error importing configuration: {e}")
             return False
+
+    def get_config_directory(self):
+        """Get the directory where config is stored"""
+        return self.config_file.parent
