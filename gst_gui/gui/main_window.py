@@ -501,7 +501,7 @@ class DragDropGUI:
             row1_frame,
             variable=self.model,
             width=250,
-            values=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]
+            values=["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
         )
         self.model_combo.pack(side="left", padx=(0, 10))
 
