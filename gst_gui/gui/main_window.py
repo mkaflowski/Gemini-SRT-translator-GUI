@@ -501,9 +501,24 @@ class DragDropGUI:
             row1_frame,
             variable=self.model,
             width=250,
-            values=["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+            values=["gemini-3-flash", "gemini-3-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
         )
-        self.model_combo.pack(side="left", padx=(0, 10))
+        self.model_combo.pack(side="left", padx=(0, 5))
+
+        # Fetch models button
+        self.fetch_models_button = ctk.CTkButton(
+            row1_frame,
+            text="🔄",
+            command=self.fetch_gemini_models,
+            width=32,
+            height=28,
+            font=ctk.CTkFont(size=14)
+        )
+        self.fetch_models_button.pack(side="left", padx=(0, 10))
+
+        # Tooltip for fetch models button
+        self.fetch_models_button.bind("<Enter>", lambda e: self._show_fetch_models_tooltip(e))
+        self.fetch_models_button.bind("<Leave>", lambda e: self._hide_fetch_models_tooltip())
 
         # Row 2: TMDB API Key
         row2_frame = ctk.CTkFrame(self.api_options_frame)
@@ -538,7 +553,22 @@ class DragDropGUI:
         # Extract audio checkbox
         self.extract_audio = tk.BooleanVar(value=processing_config['extract_audio'])
         self.extract_audio_check = ctk.CTkCheckBox(row1_frame, text="Extract audio", variable=self.extract_audio)
-        self.extract_audio_check.pack(side="left", padx=(10, 0))
+        self.extract_audio_check.pack(side="left", padx=(10, 20))
+
+        # Batch size field (optional)
+        ctk.CTkLabel(row1_frame, text="Batch size:").pack(side="left", padx=(10, 5))
+        self.batch_size = tk.StringVar(value=processing_config.get('batch_size', ''))
+        self.batch_size_entry = ctk.CTkEntry(row1_frame, textvariable=self.batch_size, width=60,
+                                              placeholder_text="auto")
+        self.batch_size_entry.pack(side="left", padx=(0, 10))
+
+        # Batch size info tooltip
+        batch_info_label = ctk.CTkLabel(row1_frame, text="ℹ️", text_color="gray",
+                                         font=ctk.CTkFont(size=12))
+        batch_info_label.pack(side="left", padx=(0, 5))
+        # Create tooltip behavior
+        batch_info_label.bind("<Enter>", lambda e: self._show_batch_tooltip(e, batch_info_label))
+        batch_info_label.bind("<Leave>", lambda e: self._hide_batch_tooltip())
 
         # Row 2: TMDB ID and TV Series
         row2_frame = ctk.CTkFrame(self.settings_options_frame)
@@ -606,6 +636,138 @@ class DragDropGUI:
         self.image_label = ctk.CTkLabel(row5_frame, text="No image", width=100, height=150)
         self.image_label.pack(side="left", padx=(0, 10))
 
+    def _show_batch_tooltip(self, event, widget):
+        """Show tooltip for batch size info"""
+        self.batch_tooltip = ctk.CTkToplevel(self.root)
+        self.batch_tooltip.wm_overrideredirect(True)
+        self.batch_tooltip.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+
+        tooltip_label = ctk.CTkLabel(
+            self.batch_tooltip,
+            text="Number of subtitles per API request.\n"
+                 "Leave empty for auto (100 for Gemini 2.0).\n"
+                 "Lower values = more requests, higher = faster.",
+            font=ctk.CTkFont(size=11),
+            corner_radius=6,
+            fg_color=("#404040", "#2b2b2b"),
+            padx=10,
+            pady=5
+        )
+        tooltip_label.pack()
+
+    def _hide_batch_tooltip(self):
+        """Hide batch size tooltip"""
+        if hasattr(self, 'batch_tooltip') and self.batch_tooltip:
+            self.batch_tooltip.destroy()
+            self.batch_tooltip = None
+
+    def _show_fetch_models_tooltip(self, event):
+        """Show tooltip for fetch models button"""
+        self.fetch_models_tooltip = ctk.CTkToplevel(self.root)
+        self.fetch_models_tooltip.wm_overrideredirect(True)
+        self.fetch_models_tooltip.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+
+        tooltip_label = ctk.CTkLabel(
+            self.fetch_models_tooltip,
+            text="Fetch available models from Gemini API",
+            font=ctk.CTkFont(size=11),
+            corner_radius=6,
+            fg_color=("#404040", "#2b2b2b"),
+            padx=10,
+            pady=5
+        )
+        tooltip_label.pack()
+
+    def _hide_fetch_models_tooltip(self):
+        """Hide fetch models tooltip"""
+        if hasattr(self, 'fetch_models_tooltip') and self.fetch_models_tooltip:
+            self.fetch_models_tooltip.destroy()
+            self.fetch_models_tooltip = None
+
+    def fetch_gemini_models(self):
+        """Fetch available models from Gemini API"""
+        api_key = self.gemini_api_key.get().strip()
+
+        if not api_key:
+            messagebox.showwarning("API Key Required",
+                                   "Please enter your Gemini API key first.")
+            return
+
+        self.log_to_console("🔄 Fetching available Gemini models...")
+        self.fetch_models_button.configure(state="disabled", text="⏳")
+
+        # Run in background thread
+        def fetch_models():
+            try:
+                import requests
+
+                url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+                response = requests.get(url, timeout=10)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    models = data.get('models', [])
+
+                    # Filter for generateContent supported models (translation capable)
+                    translation_models = []
+                    for model in models:
+                        supported_methods = model.get('supportedGenerationMethods', [])
+                        if 'generateContent' in supported_methods:
+                            # Extract model name (remove 'models/' prefix)
+                            model_name = model.get('name', '').replace('models/', '')
+                            if model_name:
+                                translation_models.append(model_name)
+
+                    translation_models.reverse()
+
+                    # Update UI in main thread
+                    self.root.after(0, lambda: self._update_models_list(translation_models))
+
+                elif response.status_code == 400:
+                    self.root.after(0, lambda: self._on_fetch_models_error("Invalid API key"))
+                elif response.status_code == 403:
+                    self.root.after(0, lambda: self._on_fetch_models_error("API key doesn't have access"))
+                else:
+                    self.root.after(0, lambda: self._on_fetch_models_error(f"API error: {response.status_code}"))
+
+            except requests.exceptions.Timeout:
+                self.root.after(0, lambda: self._on_fetch_models_error("Request timeout"))
+            except requests.exceptions.ConnectionError:
+                self.root.after(0, lambda: self._on_fetch_models_error("Connection error"))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_fetch_models_error(str(e)))
+
+        thread = threading.Thread(target=fetch_models, daemon=True)
+        thread.start()
+
+    def _update_models_list(self, models):
+        """Update the models combobox with fetched models"""
+        self.fetch_models_button.configure(state="normal", text="🔄")
+
+        if models:
+            # Keep current selection if it's in the new list
+            current_model = self.model.get()
+
+            # Update combobox values
+            self.model_combo.configure(values=models)
+
+            # Restore selection or set to first model
+            if current_model in models:
+                self.model.set(current_model)
+            elif models:
+                self.model.set(models[0])
+
+            self.log_to_console(f"✅ Found {len(models)} available models")
+            self.log_to_console(f"   Top models: {', '.join(models[:5])}")
+        else:
+            self.log_to_console("⚠️ No translation-capable models found")
+
+    def _on_fetch_models_error(self, error_msg):
+        """Handle fetch models error"""
+        self.fetch_models_button.configure(state="normal", text="🔄")
+        self.log_to_console(f"❌ Failed to fetch models: {error_msg}")
+        messagebox.showerror("Fetch Models Error", f"Could not fetch models:\n{error_msg}")
+
     def _create_action_buttons(self):
         """Create action buttons"""
         self.buttons_frame = ctk.CTkFrame(self.main_frame)
@@ -651,6 +813,17 @@ class DragDropGUI:
 
     def _get_current_config(self):
         """Get current configuration as dictionary"""
+        # Get batch size value, validate it
+        batch_size_str = self.batch_size.get().strip() if hasattr(self, 'batch_size') else ''
+        batch_size = None
+        if batch_size_str:
+            try:
+                batch_size = int(batch_size_str)
+                if batch_size <= 0:
+                    batch_size = None
+            except ValueError:
+                batch_size = None
+
         return {
             'gemini_api_key': self.gemini_api_key.get(),
             'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
@@ -665,6 +838,7 @@ class DragDropGUI:
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
             'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
             'translation_type': self.translation_type.get() if hasattr(self, 'translation_type') else 'Default',
+            'batch_size': batch_size,
         }
 
     # Keep these methods for the translation manager to call:
@@ -841,7 +1015,7 @@ class DragDropGUI:
         config_updates = {
             'gemini_api_key': self.gemini_api_key.get() if hasattr(self, 'gemini_api_key') else '',
             'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
-            'model': self.model.get() if hasattr(self, 'model') else 'gemini-2.5-flash',
+            'model': self.model.get() if hasattr(self, 'model') else 'gemini-3-flash',
             'tmdb_api_key': self.tmdb_api_key.get() if hasattr(self, 'tmdb_api_key') else '',
             'tmdb_id': self.tmdb_id.get() if hasattr(self, 'tmdb_id') else '',
             'api_expanded': self.api_expanded.get() if hasattr(self, 'api_expanded') else False,
@@ -853,6 +1027,7 @@ class DragDropGUI:
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
             'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
             'translation_type': self.translation_type.get() if hasattr(self, 'translation_type') else 'Default',
+            'batch_size': self.batch_size.get() if hasattr(self, 'batch_size') else '',
         }
 
         self.config_manager.update(config_updates)
@@ -874,6 +1049,8 @@ class DragDropGUI:
             if hasattr(self, 'language_code'):
                 self.log_to_console(f"   🏷️ Language code: {self.language_code.get()}")
             self.log_to_console(f"   🎵 Extract audio: {'✅ Enabled' if summary['extract_audio'] else '❌ Disabled'}")
+            if hasattr(self, 'batch_size') and self.batch_size.get().strip():
+                self.log_to_console(f"   📦 Batch size: {self.batch_size.get()}")
             self.log_to_console("─" * 50)
 
     def ensure_front(self):

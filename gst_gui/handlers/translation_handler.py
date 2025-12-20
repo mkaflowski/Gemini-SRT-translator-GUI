@@ -23,6 +23,7 @@ class TranslationConfig:
         self.language_code = kwargs.get('language_code', 'pl')
         self.extract_audio = kwargs.get('extract_audio', False)
         self.add_translator_info = kwargs.get('add_translator_info', True)
+        self.batch_size = kwargs.get('batch_size', True)
 
         # Content Information
         self.overview = kwargs.get('overview', '')
@@ -68,6 +69,7 @@ class TranslationConfig:
             'cancel_event': self.cancel_event,
             'add_translator_info': self.add_translator_info,
             'translation_type': self.translation_type,
+            'batch_size': self.batch_size
         }
 
 

@@ -39,7 +39,8 @@ class ConfigManager:
             'auto_fetch_tmdb': True,
             'is_tv_series': False,
             'translation_type': 'Default',
-            'add_translator_info': True
+            'add_translator_info': True,
+            'batch_size': 300
         }
         self.load_config()
         print(f"📁 Config file: {self.config_file}")
@@ -132,7 +133,8 @@ class ConfigManager:
             'tmdb_id': self.get('tmdb_id', ''),
             'is_tv_series': self.get('is_tv_series', False),
             'translation_type': self.get('translation_type', 'Default'),
-            'add_translator_info': self.get('add_translator_info', True)
+            'add_translator_info': self.get('add_translator_info', True),
+            'batch_size': self.get('batch_size', True)
         }
 
     def has_gemini_api_key(self):
