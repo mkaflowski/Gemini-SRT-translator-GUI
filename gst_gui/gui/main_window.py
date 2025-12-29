@@ -1723,9 +1723,11 @@ class DragDropGUI:
         return ""
 
     def _update_overview_field(self, overview_text):
-        """Update the overview entry field"""
-        if hasattr(self, 'overview'):
-            self.overview.set(overview_text or '')
+        """Update the overview textbox field"""
+        if hasattr(self, 'overview_textbox'):
+            self.overview_textbox.delete("1.0", "end")
+            if overview_text:
+                self.overview_textbox.insert("1.0", overview_text)
 
     def _clear_overview_field(self):
         """Clear the overview entry field"""
