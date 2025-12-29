@@ -611,10 +611,9 @@ class DragDropGUI:
         row3_frame = ctk.CTkFrame(self.settings_options_frame)
         row3_frame.pack(fill="x", padx=10, pady=(5, 5))
 
-        ctk.CTkLabel(row3_frame, text="Overview:").pack(side="left", padx=(10, 5))
-        self.overview = tk.StringVar(value='')
-        self.overview_entry = ctk.CTkEntry(row3_frame, textvariable=self.overview, width=500)
-        self.overview_entry.pack(side="left", padx=(0, 10), fill="x", expand=True)
+        ctk.CTkLabel(row3_frame, text="Overview:").pack(side="left", padx=(10, 5), anchor="n")
+        self.overview_textbox = ctk.CTkTextbox(row3_frame, width=500, height=80, wrap="word")
+        self.overview_textbox.pack(side="left", padx=(0, 10), fill="x", expand=True)
 
         # Row 4: Auto-fetch and Add translator info
         row4_frame = ctk.CTkFrame(self.settings_options_frame)
