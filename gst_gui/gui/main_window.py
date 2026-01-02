@@ -1774,13 +1774,16 @@ class DragDropGUI:
             self.log_to_console(f"❌ Error updating TMDB ID: {e}")
 
     def log_to_console(self, message):
-        """Add message to console"""
+        """Thread-safe logging to console"""
 
         def update_console():
             if hasattr(self, 'console_text'):
                 self.console_text.insert(tk.END, message + "\n")
                 self.console_text.see(tk.END)
-                self.root.update_idletasks()
+                # USUŃ: self.root.update_idletasks() - to powoduje problemy!
 
-        # Make sure GUI update happens in main thread
-        self.root.after(0, update_console)
+        # Zawsze używaj after() dla thread-safety
+        if threading.current_thread() is threading.main_thread():
+            update_console()
+        else:
+            self.root.after(0, update_console)
