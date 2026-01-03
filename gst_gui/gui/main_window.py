@@ -51,6 +51,12 @@ class DragDropGUI:
     """Main GUI class that coordinates all handlers"""
 
     def __init__(self, root):
+        # Initialize log buffer FIRST - before anything that might log
+        self._log_buffer = []
+        self._log_lock = threading.Lock()
+        self._log_scheduled = False
+        self._max_console_lines = 1000
+
         # Set CustomTkinter appearance before doing anything else
         ctk.set_appearance_mode("dark")  # Modes: "System" (default), "Dark", "Light"
         ctk.set_default_color_theme("blue")  # Themes: "blue" (default), "green", "dark-blue"
@@ -409,13 +415,11 @@ class DragDropGUI:
         self.console_container.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Console text widget - reduced height from 12 to 6 lines
-        self.console_text = scrolledtext.ScrolledText(
+        self.console_text = ctk.CTkTextbox(
             self.console_container,
-            height=6,  # Reduced from 12 to 6 lines (50% shorter)
-            bg='#2b2b2b',
-            fg='#ffffff',
-            font=('Consolas', 10),
-            insertbackground='white'
+            height=150,
+            font=ctk.CTkFont(family="Consolas", size=10),
+            wrap="word"
         )
         self.console_text.pack(fill="both", expand=True)
 
@@ -1774,16 +1778,47 @@ class DragDropGUI:
             self.log_to_console(f"❌ Error updating TMDB ID: {e}")
 
     def log_to_console(self, message):
-        """Thread-safe logging to console"""
+        """Thread-safe logging to console with throttling"""
+        with self._log_lock:
+            self._log_buffer.append(message)
 
-        def update_console():
-            if hasattr(self, 'console_text'):
-                self.console_text.insert(tk.END, message + "\n")
-                self.console_text.see(tk.END)
-                # USUŃ: self.root.update_idletasks() - to powoduje problemy!
+            # Schedule UI update if not already scheduled
+            if not self._log_scheduled:
+                self._log_scheduled = True
+                self.root.after(50, self._flush_log_buffer)  # 50ms throttle
 
-        # Zawsze używaj after() dla thread-safety
-        if threading.current_thread() is threading.main_thread():
-            update_console()
-        else:
-            self.root.after(0, update_console)
+    def _flush_log_buffer(self):
+        """Flush log buffer to console (runs in main thread)"""
+        with self._log_lock:
+            if not self._log_buffer:
+                self._log_scheduled = False
+                return
+
+            # Get all messages and clear buffer
+            messages = self._log_buffer.copy()
+            self._log_buffer.clear()
+            self._log_scheduled = False
+
+        if not hasattr(self, 'console_text'):
+            return
+
+        try:
+            # Disable auto-scroll temporarily for performance
+            self.console_text.configure(state='normal')
+
+            # Add all messages at once
+            text_to_add = '\n'.join(messages) + '\n'
+            self.console_text.insert('end', text_to_add)
+
+            # Limit total lines to prevent memory issues
+            total_lines = int(self.console_text.index('end-1c').split('.')[0])
+            if total_lines > self._max_console_lines:
+                # Remove oldest lines
+                lines_to_remove = total_lines - self._max_console_lines
+                self.console_text.delete('1.0', f'{lines_to_remove}.0')
+
+            # Scroll to end
+            self.console_text.see('end')
+
+        except Exception as e:
+            print(f"Console log error: {e}")
