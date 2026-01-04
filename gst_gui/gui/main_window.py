@@ -12,7 +12,6 @@ from pathlib import Path
 import os
 from gst_gui.handlers.drag_drop_handler import DropAreaHandler
 
-
 import requests
 from PIL import ImageTk, Image
 
@@ -305,44 +304,44 @@ class DragDropGUI:
 
         # Configure the dark TreeView style
         style.configure("Dark.Treeview",
-                       background="#2b2b2b",           # Dark background
-                       foreground="#ffffff",           # White text
-                       fieldbackground="#2b2b2b",      # Dark field background
-                       borderwidth=0,                  # No borders
-                       relief="flat",                  # Flat appearance
-                       rowheight=25)                   # Row height
+                        background="#2b2b2b",  # Dark background
+                        foreground="#ffffff",  # White text
+                        fieldbackground="#2b2b2b",  # Dark field background
+                        borderwidth=0,  # No borders
+                        relief="flat",  # Flat appearance
+                        rowheight=25)  # Row height
 
         # Configure TreeView headings
         style.configure("Dark.Treeview.Heading",
-                       background="#404040",           # Dark gray headers
-                       foreground="#ffffff",           # White text
-                       borderwidth=1,                  # Thin border
-                       relief="solid",                 # Solid border style
-                       font=('Arial', 9, 'bold'))      # Bold font
+                        background="#404040",  # Dark gray headers
+                        foreground="#ffffff",  # White text
+                        borderwidth=1,  # Thin border
+                        relief="solid",  # Solid border style
+                        font=('Arial', 9, 'bold'))  # Bold font
 
         # Configure selection and hover effects
         style.map("Dark.Treeview",
-                 background=[('selected', '#1f538d'),    # Blue when selected
-                            ('active', '#404040')],      # Gray when hovered
-                 foreground=[('selected', '#ffffff'),    # White text when selected
-                            ('active', '#ffffff')])      # White text when hovered
+                  background=[('selected', '#1f538d'),  # Blue when selected
+                              ('active', '#404040')],  # Gray when hovered
+                  foreground=[('selected', '#ffffff'),  # White text when selected
+                              ('active', '#ffffff')])  # White text when hovered
 
         # Configure scrollbars to be dark
         style.configure("Vertical.TScrollbar",
-                       background="#404040",
-                       troughcolor="#2b2b2b",
-                       borderwidth=0,
-                       arrowcolor="#ffffff",
-                       darkcolor="#404040",
-                       lightcolor="#404040")
+                        background="#404040",
+                        troughcolor="#2b2b2b",
+                        borderwidth=0,
+                        arrowcolor="#ffffff",
+                        darkcolor="#404040",
+                        lightcolor="#404040")
 
         style.configure("Horizontal.TScrollbar",
-                       background="#404040",
-                       troughcolor="#2b2b2b",
-                       borderwidth=0,
-                       arrowcolor="#ffffff",
-                       darkcolor="#404040",
-                       lightcolor="#404040")
+                        background="#404040",
+                        troughcolor="#2b2b2b",
+                        borderwidth=0,
+                        arrowcolor="#ffffff",
+                        darkcolor="#404040",
+                        lightcolor="#404040")
 
     def _configure_treeview_tags(self):
         """Configure TreeView tags for different statuses"""
@@ -353,46 +352,46 @@ class DragDropGUI:
         if ctk.get_appearance_mode() == "Dark":
             # Dark theme colors
             style.configure("Treeview",
-                          background="#2b2b2b",
-                          foreground="#ffffff",
-                          fieldbackground="#2b2b2b",
-                          borderwidth=0,
-                          relief="flat")
+                            background="#2b2b2b",
+                            foreground="#ffffff",
+                            fieldbackground="#2b2b2b",
+                            borderwidth=0,
+                            relief="flat")
             style.configure("Treeview.Heading",
-                          background="#404040",
-                          foreground="#ffffff",
-                          borderwidth=1,
-                          relief="solid")
+                            background="#404040",
+                            foreground="#ffffff",
+                            borderwidth=1,
+                            relief="solid")
             # Configure selection colors
             style.map("Treeview",
-                     background=[('selected', '#1f538d')],
-                     foreground=[('selected', '#ffffff')])
+                      background=[('selected', '#1f538d')],
+                      foreground=[('selected', '#ffffff')])
         else:
             # Light theme colors (fallback)
             style.configure("Treeview",
-                          background="#ffffff",
-                          foreground="#000000",
-                          fieldbackground="#ffffff")
+                            background="#ffffff",
+                            foreground="#000000",
+                            fieldbackground="#ffffff")
             style.configure("Treeview.Heading",
-                          background="#f0f0f0",
-                          foreground="#000000")
+                            background="#f0f0f0",
+                            foreground="#000000")
 
         # Configure tags with proper colors for dark theme
         self.tree.tag_configure('matched',
-                               background='#2d5a2d',
-                               foreground='#ffffff')
+                                background='#2d5a2d',
+                                foreground='#ffffff')
         self.tree.tag_configure('subtitle_only',
-                               background='#5a5a2d',
-                               foreground='#ffffff')
+                                background='#5a5a2d',
+                                foreground='#ffffff')
         self.tree.tag_configure('video_only',
-                               background='#2d2d5a',
-                               foreground='#ffffff')
+                                background='#2d2d5a',
+                                foreground='#ffffff')
         self.tree.tag_configure('no_match',
-                               background='#5a2d2d',
-                               foreground='#ffffff')
+                                background='#5a2d2d',
+                                foreground='#ffffff')
         self.tree.tag_configure('unchecked',
-                               background='#404040',
-                               foreground='#888888')
+                                background='#404040',
+                                foreground='#888888')
 
     def _create_console(self):
         """Create the console output area"""
@@ -557,18 +556,24 @@ class DragDropGUI:
         # Extract audio checkbox
         self.extract_audio = tk.BooleanVar(value=processing_config['extract_audio'])
         self.extract_audio_check = ctk.CTkCheckBox(row1_frame, text="Extract audio", variable=self.extract_audio)
-        self.extract_audio_check.pack(side="left", padx=(10, 20))
+        self.extract_audio_check.pack(side="left", padx=(10, 10))
+
+        # Include timestamps checkbox
+        self.include_timestamps = tk.BooleanVar(value=processing_config.get('include_timestamps', False))
+        self.include_timestamps_check = ctk.CTkCheckBox(row1_frame, text="Include timestamps",
+                                                        variable=self.include_timestamps)
+        self.include_timestamps_check.pack(side="left", padx=(0, 20))
 
         # Batch size field (optional)
         ctk.CTkLabel(row1_frame, text="Batch size:").pack(side="left", padx=(10, 5))
         self.batch_size = tk.StringVar(value=processing_config.get('batch_size', ''))
         self.batch_size_entry = ctk.CTkEntry(row1_frame, textvariable=self.batch_size, width=60,
-                                              placeholder_text="auto")
+                                             placeholder_text="auto")
         self.batch_size_entry.pack(side="left", padx=(0, 10))
 
         # Batch size info tooltip
         batch_info_label = ctk.CTkLabel(row1_frame, text="ℹ️", text_color="gray",
-                                         font=ctk.CTkFont(size=12))
+                                        font=ctk.CTkFont(size=12))
         batch_info_label.pack(side="left", padx=(0, 5))
         # Create tooltip behavior
         batch_info_label.bind("<Enter>", lambda e: self._show_batch_tooltip(e, batch_info_label))
@@ -624,11 +629,13 @@ class DragDropGUI:
         row4_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         self.auto_fetch_tmdb = tk.BooleanVar(value=processing_config['auto_fetch_tmdb'])
-        self.auto_fetch_check = ctk.CTkCheckBox(row4_frame, text="Auto-fetch TMDB ID when loading files", variable=self.auto_fetch_tmdb)
+        self.auto_fetch_check = ctk.CTkCheckBox(row4_frame, text="Auto-fetch TMDB ID when loading files",
+                                                variable=self.auto_fetch_tmdb)
         self.auto_fetch_check.pack(side="left", padx=(10, 20))
 
         self.add_translator_info = tk.BooleanVar(value=processing_config.get('add_translator_info', True))
-        self.add_translator_info_check = ctk.CTkCheckBox(row4_frame, text="Add translator info", variable=self.add_translator_info)
+        self.add_translator_info_check = ctk.CTkCheckBox(row4_frame, text="Add translator info",
+                                                         variable=self.add_translator_info)
         self.add_translator_info_check.pack(side="left", padx=(10, 0))
 
         # Row 5: Poster image
@@ -836,6 +843,7 @@ class DragDropGUI:
             'language': self.language.get(),
             'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
             'extract_audio': self.extract_audio.get(),
+            'include_timestamps': self.include_timestamps.get() if hasattr(self, 'include_timestamps') else False,
             'overview': self.overview.get() if hasattr(self, 'overview') else '',
             'movie_title': self._get_movie_title_from_treeview(),
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
@@ -967,7 +975,6 @@ class DragDropGUI:
         # Update scrollbar visibility after layout change
         self.root.after(100, self._manage_scrollbar_visibility)
 
-
     def load_image(self, url, width=100, height=150):
         """Load and display image using CTkImage for proper scaling"""
         try:
@@ -980,7 +987,7 @@ class DragDropGUI:
             # Create CTkImage instead of PhotoImage for proper CustomTkinter support
             ctk_image = ctk.CTkImage(
                 light_image=image,  # Image for light mode
-                dark_image=image,   # Same image for dark mode
+                dark_image=image,  # Same image for dark mode
                 size=(width, height)  # CTkImage handles scaling automatically
             )
 
@@ -1026,6 +1033,7 @@ class DragDropGUI:
             'language': self.language.get() if hasattr(self, 'language') else 'Polish',
             'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
             'extract_audio': self.extract_audio.get() if hasattr(self, 'extract_audio') else False,
+            'include_timestamps': self.include_timestamps.get() if hasattr(self, 'include_timestamps') else False,
             'auto_fetch_tmdb': self.auto_fetch_tmdb.get() if hasattr(self, 'auto_fetch_tmdb') else True,
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
             'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
@@ -1303,7 +1311,7 @@ class DragDropGUI:
             if current_text.startswith('☑️ '):
                 new_text = '☐ ' + current_text[3:]  # Remove "☑️ " and add "☐ "
             else:
-                new_text = '☐' + current_text[1:]   # Remove just "☑️" and add "☐"
+                new_text = '☐' + current_text[1:]  # Remove just "☑️" and add "☐"
 
             new_values = list(values)
             if len(new_values) >= 6:
@@ -1317,7 +1325,7 @@ class DragDropGUI:
             if current_text.startswith('☐ '):
                 new_text = '☑️ ' + current_text[2:]  # Remove "☐ " and add "☑️ "
             else:
-                new_text = '☑️' + current_text[1:]   # Remove just "☐" and add "☑️"
+                new_text = '☑️' + current_text[1:]  # Remove just "☐" and add "☑️"
 
             new_values = list(values)
             if len(new_values) >= 6:

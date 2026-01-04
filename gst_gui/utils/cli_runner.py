@@ -366,7 +366,7 @@ class CLIRunner:
             additional_tranlation_info = """ IMPORTANT:
             1. Keep sentences as short and clear as possible while preserving the full sense.
             2. Focus on meaning, not word-for-word translation.
-            3. Remove filler words, repetitions, and unnecessary expressions (e.g., “uhm,” “well,” “you know,” etc.).
+            3. Remove filler words, repetitions, and unnecessary expressions (e.g., "uhm," "well," "you know," etc.).
             4. Maintain a natural tone and make the translation easy to read.
             5. If a sentence can be expressed more briefly without losing meaning, shorten it.
             """
@@ -412,6 +412,12 @@ class CLIRunner:
                     cmd.extend(['-v', str(video_file)])
                 elif not video_file:
                     self.log(f"   ℹ️ No video file - processing subtitle only")
+
+        # Add include timestamps flag if configured
+        include_timestamps = config.get('include_timestamps', False)
+        if include_timestamps:
+            cmd.append('--include-timestamps')
+            self.log(f"   ⏱️ Include timestamps: enabled")
 
         return cmd
 

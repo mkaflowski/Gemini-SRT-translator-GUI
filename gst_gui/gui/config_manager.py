@@ -36,6 +36,7 @@ class ConfigManager:
             'language': 'Polish',
             'language_code': 'pl',
             'extract_audio': False,
+            'include_timestamps': False,
             'auto_fetch_tmdb': True,
             'is_tv_series': False,
             'translation_type': 'Default',
@@ -128,6 +129,7 @@ class ConfigManager:
         return {
             'language': self.get('language', 'Polish'),
             'extract_audio': self.get('extract_audio', False),
+            'include_timestamps': self.get('include_timestamps', False),
             'auto_fetch_tmdb': self.get('auto_fetch_tmdb', True),
             'language_code': self.get('language_code', 'pl'),
             'tmdb_id': self.get('tmdb_id', ''),
