@@ -1158,6 +1158,37 @@ class DragDropGUI:
             self.log_to_console("🎬 No TV series patterns detected - set to Movie mode")
             return False
 
+    def _load_transcription_if_exists(self, folder_path):
+        """
+        Check if transcription.txt exists in folder and load its content to overview.
+
+        Args:
+            folder_path: Path to the folder to check for transcription.txt
+        """
+        try:
+            transcription_file = Path(folder_path) / "transcription.txt"
+
+            if transcription_file.exists():
+                self.log_to_console(f"📄 Found transcription.txt in folder")
+
+                # Read the transcription file
+                with open(transcription_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    transcription_content = f.read().strip()
+
+                if transcription_content:
+                    # Update the overview field with transcription content
+                    self._update_overview_field(transcription_content)
+
+                    # Log success with preview
+                    preview = transcription_content[:100] + "..." if len(
+                        transcription_content) > 100 else transcription_content
+                    self.log_to_console(f"✅ Loaded transcription to overview: {preview}")
+                else:
+                    self.log_to_console(f"⚠️ transcription.txt is empty")
+
+        except Exception as e:
+            self.log_to_console(f"⚠️ Error loading transcription.txt: {e}")
+
     def _process_single_file(self, file_path):
         """Process a single file"""
         self.log_to_console("File detected")
@@ -1195,6 +1226,8 @@ class DragDropGUI:
                                      f"📄 {file_type.title()}"),
                              tags=('no_match',))
 
+        # Check for transcription.txt in the file's folder
+        self._load_transcription_if_exists(self.current_folder_path)
         # Auto-fetch TMDB ID after adding to TreeView (with small delay to ensure UI is updated)
         self.root.after(100, lambda: self._auto_fetch_tmdb_for_movie(title, year_display))
 
@@ -1213,6 +1246,8 @@ class DragDropGUI:
 
         self.add_subtitle_matches_to_treeview(found_files, folder_path)
 
+        # Check for transcription.txt in the folder
+        self._load_transcription_if_exists(folder_path)
         # Auto-fetch TMDB ID after adding files to TreeView (with small delay to ensure UI is updated)
         self.root.after(100, self._auto_fetch_tmdb_from_first_file)
 
@@ -1633,8 +1668,15 @@ class DragDropGUI:
         """Update only the overview field with found movie (runs in main thread)"""
         try:
             # Update only the overview field (keep existing TMDB ID)
+            # BUT only if overview is currently empty (preserve transcription.txt)
             overview = movie.get('overview', '')
-            self._update_overview_field(overview)
+            current_overview = self.overview_textbox.get("1.0", "end-1c").strip() if hasattr(self,
+                                                                                             'overview_textbox') else ""
+
+            if not current_overview and overview:
+                self._update_overview_field(overview)
+            elif current_overview:
+                self.log_to_console("ℹ️ Overview already filled - keeping existing content")
 
             # Log success
             year_text = f" ({movie['year']})" if movie.get('year') else ""
@@ -1753,9 +1795,17 @@ class DragDropGUI:
             movie_id = str(movie['id'])
             self.tmdb_id.set(movie_id)
 
-            # Update the overview field
+            # Update the overview field ONLY if it's currently empty
+            # (preserve transcription.txt content if already loaded)
             overview = movie.get('overview', '')
-            self._update_overview_field(overview)
+            current_overview = self.overview_textbox.get("1.0", "end-1c").strip() if hasattr(self,
+                                                                                             'overview_textbox') else ""
+
+            if not current_overview and overview:
+                self._update_overview_field(overview)
+            elif current_overview and overview:
+                self.log_to_console("ℹ️ Overview already filled (transcription.txt?) - keeping existing content")
+
             if movie["poster_path"]:
                 self.load_image("https://image.tmdb.org/t/p/w154" + movie["poster_path"])
 
