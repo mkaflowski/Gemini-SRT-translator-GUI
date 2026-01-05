@@ -44,6 +44,11 @@ pip install --upgrade git+https://github.com/mkaflowski/Gemini-SRT-translator-GU
 
 ## 🚀 Usage
 
+```bash
+gst_gui - for translator GUI
+gst_transcribe - for getting video transcription and overview (experimental, in polish langauge)
+```
+
 ### Basic Workflow
 1. **Launch** the application
 2. **Enter API keys** in the settings

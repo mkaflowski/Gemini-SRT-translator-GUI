@@ -10,6 +10,7 @@ authors = [{ name = "Mateusz Kaflowski" }]
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
+    "google-genai>=1.56.0",
     "customtkinter>=5.2.2",
     "gemini-srt-translator>=2.1.2",
     "Pillow>=9.0.0",
@@ -20,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 gst_gui = "gst_gui.main:main"
+gst_transcribe = "gst_gui.utils.video_description_with_splitting:main"
 
 [tool.setuptools]
 include-package-data = true
