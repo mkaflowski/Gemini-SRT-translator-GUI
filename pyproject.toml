@@ -16,7 +16,7 @@ dependencies = [
     "Pillow>=9.0.0",
     "requests>=2.25.0",
     "srt>=3.5.0",
-    "tkinterdnd2>=0.3.0"bug fixing
+    "tkinterdnd2>=0.3.0"
 ]
 
 [project.scripts]
