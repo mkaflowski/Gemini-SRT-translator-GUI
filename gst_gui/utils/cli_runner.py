@@ -4,8 +4,10 @@ Handles process management and output streaming.
 """
 import datetime
 import os
+import queue
 import subprocess
 import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -430,6 +432,10 @@ class CLIRunner:
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
             env['PYTHONUTF8'] = '1'
+            # Remove GOOGLE_API_KEY from env: gst CLI treats it as a Vertex AI
+            # Enterprise cloud_api_key (requiring OAuth2), which conflicts with
+            # regular Gemini API key auth passed via -k flag.
+            env.pop('GOOGLE_API_KEY', None)
 
             # Start process with explicit encoding
             process = subprocess.Popen(
@@ -444,9 +450,22 @@ class CLIRunner:
                 env=env
             )
 
-            # Read output in real-time with cancellation checking
+            # Read stdout in a background thread so readline() doesn't block
+            # the cancellation check in the main loop.
+            output_queue = queue.Queue()
+
+            def _reader():
+                try:
+                    for line in process.stdout:
+                        output_queue.put(line)
+                finally:
+                    output_queue.put(None)  # sentinel
+
+            reader_thread = threading.Thread(target=_reader, daemon=True)
+            reader_thread.start()
+
             while True:
-                # Check for cancellation
+                # Check for cancellation first (responsive even during API waits)
                 if cancel_event and cancel_event.is_set():
                     self.log(f"🛑 Canceling process for pair {pair_number}")
                     process.terminate()
@@ -456,23 +475,20 @@ class CLIRunner:
                         self.log(f"⚠️ Force killing process for pair {pair_number}")
                         process.kill()
                         process.wait()
+                    reader_thread.join(timeout=2)
                     return False
 
                 try:
-                    line = process.stdout.readline()
-                    if not line:
-                        break
-
-                    output_line = line.rstrip()
-                    if output_line:  # Only log non-empty lines
-                        self.log(f"   {output_line}")
-
-                except UnicodeDecodeError as e:
-                    self.log(f"   Unicode decode error: {e}")
+                    line = output_queue.get(timeout=0.1)
+                except queue.Empty:
                     continue
-                except Exception as e:
-                    self.log(f"   Error reading output: {e}")
+
+                if line is None:  # sentinel - stdout closed
                     break
+
+                output_line = line.rstrip()
+                if output_line:
+                    self.log(f"   {output_line}")
 
             # Wait for completion (with timeout for cancellation)
             try:

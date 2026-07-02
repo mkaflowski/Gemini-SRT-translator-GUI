@@ -209,6 +209,10 @@ class DragDropGUI:
         # Then start monitoring for when it's needed
         self.root.after(500, self._manage_scrollbar_visibility)
 
+        # Check for updates in background (non-blocking)
+        self.root.after(1500, self._check_gst_update)
+        self.root.after(2000, self._check_app_update)
+
     def _create_drop_area(self):
         # Create the drop frame
         self.drop_frame = ctk.CTkFrame(self.main_frame, height=120, corner_radius=10)
@@ -693,6 +697,113 @@ class DragDropGUI:
         if hasattr(self, 'fetch_models_tooltip') and self.fetch_models_tooltip:
             self.fetch_models_tooltip.destroy()
             self.fetch_models_tooltip = None
+
+    def _check_gst_update(self):
+        """Check PyPI for a newer version of gemini-srt-translator (background thread)."""
+        import threading
+
+        def _fetch():
+            try:
+                import importlib.metadata
+                import requests
+
+                current = importlib.metadata.version('gemini-srt-translator')
+                resp = requests.get(
+                    'https://pypi.org/pypi/gemini-srt-translator/json',
+                    timeout=5
+                )
+                if resp.status_code != 200:
+                    return
+                latest = resp.json()['info']['version']
+
+                from packaging.version import Version
+                if Version(latest) > Version(current):
+                    self.root.after(0, lambda: self._notify_gst_update(current, latest))
+                else:
+                    self.root.after(0, lambda: self.log_to_console(
+                        f"✅ gemini-srt-translator {current} jest aktualna"
+                    ))
+            except Exception:
+                pass  # silent – no internet or package not found
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _check_app_update(self):
+        """Check GitHub for a newer version of this GUI app (background thread)."""
+        import threading
+
+        def _fetch():
+            try:
+                import importlib.metadata
+                import re
+                import requests
+
+                current = importlib.metadata.version('gst_gui')
+                url = (
+                    'https://raw.githubusercontent.com/'
+                    'mkaflowski/Gemini-SRT-translator-GUI/main/pyproject.toml'
+                )
+                resp = requests.get(url, timeout=5)
+                if resp.status_code != 200:
+                    return
+                match = re.search(r'^version\s*=\s*"([^"]+)"', resp.text, re.MULTILINE)
+                if not match:
+                    return
+                latest = match.group(1)
+
+                from packaging.version import Version
+                if Version(latest) > Version(current):
+                    self.root.after(0, lambda: self._notify_app_update(current, latest))
+            except Exception:
+                pass
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _notify_app_update(self, current, latest):
+        """Show GUI app update notification."""
+        self.log_to_console(
+            f"🆕 Dostępna nowa wersja aplikacji: {current} → {latest}"
+        )
+        messagebox.showinfo(
+            "Aktualizacja aplikacji",
+            f"Dostępna jest nowa wersja Gemini SRT Translator GUI:\n\n"
+            f"  Aktualna: {current}\n"
+            f"  Nowa:     {latest}\n\n"
+            f"Pobierz najnowszą wersję z:\n"
+            f"https://github.com/mkaflowski/Gemini-SRT-translator-GUI"
+        )
+
+    def _notify_gst_update(self, current, latest):
+        """Show update notification in console and optionally offer to upgrade."""
+        self.log_to_console(
+            f"🆕 Dostępna nowa wersja gemini-srt-translator: {current} → {latest}"
+        )
+        if messagebox.askyesno(
+            "Aktualizacja dostępna",
+            f"Dostępna jest nowa wersja gemini-srt-translator:\n\n"
+            f"  Aktualna: {current}\n"
+            f"  Nowa:     {latest}\n\n"
+            f"Zaktualizować teraz?"
+        ):
+            import subprocess, sys, threading
+
+            def _upgrade():
+                self.root.after(0, lambda: self.log_to_console("⏳ Aktualizowanie..."))
+                result = subprocess.run(
+                    [sys.executable, '-m', 'pip', 'install',
+                     f'gemini-srt-translator=={latest}'],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    self.root.after(0, lambda: self.log_to_console(
+                        f"✅ Zaktualizowano do {latest} – uruchom ponownie aplikację"
+                    ))
+                else:
+                    self.root.after(0, lambda: self.log_to_console(
+                        f"❌ Błąd aktualizacji: {result.stderr[:200]}"
+                    ))
+
+            threading.Thread(target=_upgrade, daemon=True).start()
 
     def fetch_gemini_models(self):
         """Fetch available models from Gemini API"""

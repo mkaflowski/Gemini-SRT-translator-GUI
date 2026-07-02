@@ -197,6 +197,8 @@ class TranslationHandler:
         self.state = TranslationState()
         self.processing_thread = None
         self.cancel_event = threading.Event()
+        self._current_file_pairs = []
+        self._current_config_dict = {}
 
     def _default_logger(self, message):
         """Default logger that prints to console"""
@@ -236,9 +238,28 @@ class TranslationHandler:
                                  "No valid file pairs found for translation.")
             return False
 
+        # Check for leftover output / .progress files before confirming
+        full_pairs = self._build_full_paths(valid_pairs)
+        existing = self._find_existing_output_files(full_pairs, config_dict)
+        if existing:
+            names = '\n'.join(f'  • {p.name}' for p in existing)
+            if messagebox.askyesno(
+                "Istniejące pliki",
+                f"Znaleziono pliki z poprzedniego tłumaczenia:\n{names}\n\nUsunąć je przed startem?"
+            ):
+                for p in existing:
+                    try:
+                        p.unlink()
+                    except Exception as e:
+                        self.logger(f"⚠️ Nie można usunąć {p.name}: {e}")
+
         # Show confirmation
         if not self._confirm_translation(valid_pairs, config):
             return False
+
+        # Remember for post-cancel cleanup
+        self._current_file_pairs = full_pairs
+        self._current_config_dict = config_dict
 
         # Start the translation process
         self._start_translation_async(valid_pairs, config)
@@ -273,11 +294,42 @@ class TranslationHandler:
 
         self.logger("✅ Translation has been cancelled")
 
+        # Ask about leftover files
+        existing = self._find_existing_output_files(
+            self._current_file_pairs, self._current_config_dict
+        )
+        if existing:
+            names = '\n'.join(f'  • {p.name}' for p in existing)
+            if messagebox.askyesno(
+                "Usuń pliki?",
+                f"Tłumaczenie anulowano. Znaleziono pliki:\n{names}\n\nUsunąć je?"
+            ):
+                for p in existing:
+                    try:
+                        p.unlink()
+                        self.logger(f"🗑️ Usunięto: {p.name}")
+                    except Exception as e:
+                        self.logger(f"⚠️ Nie można usunąć {p.name}: {e}")
+
         # Update UI
         if self.status_callback:
             self.status_callback("Cancelled")
         if self.button_callback:
             self.button_callback('translate')
+
+    def _find_existing_output_files(self, full_pairs, config_dict):
+        """Return list of existing output .srt and .progress paths for given pairs."""
+        found = []
+        for pair in full_pairs:
+            subtitle = pair.get('subtitle')
+            if not subtitle:
+                continue
+            output_path = self.cli_runner._get_output_file_path(subtitle, config_dict)
+            progress_path = output_path.with_suffix('.progress')
+            for p in (output_path, progress_path):
+                if p.exists():
+                    found.append(p)
+        return found
 
     def _validate_file_pairs(self, file_pairs, extract_audio):
         return file_pairs

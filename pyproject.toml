@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gst_gui"
-version = "0.15"
+version = "0.16"
 description = "Gemini SRT Translator GUI"
 authors = [{ name = "Mateusz Kaflowski" }]
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = [
     "Pillow>=9.0.0",
     "requests>=2.25.0",
     "srt>=3.5.0",
-    "tkinterdnd2>=0.3.0"
+    "tkinterdnd2>=0.3.0"bug fixing
 ]
 
 [project.scripts]
