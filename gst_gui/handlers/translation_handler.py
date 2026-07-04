@@ -14,7 +14,9 @@ class TranslationConfig:
     def __init__(self, **kwargs):
         # API Configuration
         self.gemini_api_key = kwargs.get('gemini_api_key', '')
+        self.gemini_api_key2 = kwargs.get('gemini_api_key2', '')
         self.model = kwargs.get('model', 'gemini-2.5-flash')
+        self.fallback_models = kwargs.get('fallback_models', '')
         self.tmdb_api_key = kwargs.get('tmdb_api_key', '')
         self.tmdb_id = kwargs.get('tmdb_id', '')
 
@@ -57,7 +59,9 @@ class TranslationConfig:
         """Convert configuration to dictionary for CLI runner"""
         return {
             'gemini_api_key': self.gemini_api_key,
+            'gemini_api_key2': self.gemini_api_key2,
             'model': self.model,
+            'fallback_models': self.fallback_models,
             'tmdb_api_key': self.tmdb_api_key,
             'tmdb_id': self.tmdb_id,
             'language': self.language,

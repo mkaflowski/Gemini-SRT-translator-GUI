@@ -17,25 +17,66 @@ import srt
 class CLIRunner:
     """Handles execution of CLI commands with real-time output"""
 
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, progress_callback=None, pair_status_callback=None):
         self.logger = logger
+        # progress_callback(completed, total) - overall batch progress
+        self.progress_callback = progress_callback
+        # pair_status_callback(pair, status) - status is one of:
+        # 'translating', 'done', 'failed', 'cancelled'
+        self.pair_status_callback = pair_status_callback
+        # Root that must be on PYTHONPATH so `-m gemini_srt_translator`
+        # resolves to the vendored copy shipped inside this repo.
+        self.gst_root = None
         self.gst_cmd = self._find_gst_command()
 
-    def _find_gst_command(self):
-        """Find the gst command executable"""
-        try:
-            # Check if gst is in PATH
-            result = subprocess.run(['which', 'gst'], capture_output=True, text=True)
-            if result.returncode == 0:
-                return 'gst'
-        except Exception:
-            pass
+    def _notify_progress(self, completed, total):
+        """Report overall progress (safe to call from worker thread)"""
+        if self.progress_callback:
+            try:
+                self.progress_callback(completed, total)
+            except Exception:
+                pass
 
+    def _notify_pair_status(self, pair, status):
+        """Report per-pair status (safe to call from worker thread)"""
+        if self.pair_status_callback:
+            try:
+                self.pair_status_callback(pair, status)
+            except Exception:
+                pass
+
+    def _find_gst_command(self):
+        """
+        Resolve the command used to invoke gemini-srt-translator.
+
+        Prefer the copy of the package vendored into this repository
+        (../../gemini_srt_translator relative to this file) and run it as a
+        module via the current interpreter. Fall back to a globally installed
+        `gst` executable if the vendored copy is not present.
+
+        Returns a list of command tokens (prefix), or None if nothing is found.
+        """
+        # Repo root: gst_gui/utils/cli_runner.py -> <root>
+        repo_root = Path(__file__).resolve().parents[2]
+        vendored_pkg = repo_root / "gemini_srt_translator"
+        if (vendored_pkg / "__init__.py").exists():
+            self.gst_root = repo_root
+            return [sys.executable, '-m', 'gemini_srt_translator']
+
+        # Fallback: globally installed `gst` executable
         try:
             # Try Windows where command
             result = subprocess.run(['where', 'gst'], capture_output=True, text=True, shell=True)
             if result.returncode == 0:
-                return 'gst'
+                return ['gst']
+        except Exception:
+            pass
+
+        try:
+            # Check if gst is in PATH (POSIX)
+            result = subprocess.run(['which', 'gst'], capture_output=True, text=True)
+            if result.returncode == 0:
+                return ['gst']
         except Exception:
             pass
 
@@ -43,7 +84,7 @@ class CLIRunner:
         local_paths = ['gst', 'gst.exe', './gst', './gst.exe']
         for path in local_paths:
             if Path(path).exists():
-                return str(Path(path).resolve())
+                return [str(Path(path).resolve())]
 
         return None
 
@@ -74,26 +115,35 @@ class CLIRunner:
             self.log("Check if 'gst' is installed or available in PATH")
             return False
 
-        self.log(f"✅ Found gst: {self.gst_cmd}")
+        self.log(f"✅ Found gst: {' '.join(self.gst_cmd)}")
         self.log("─" * 30)
 
         success_count = 0
         total_count = len(file_pairs)
         cancel_event = config.get('cancel_event')
 
+        self._notify_progress(0, total_count)
+
         for i, pair in enumerate(file_pairs, 1):
             if cancel_event and cancel_event.is_set():
                 self.log(f"🛑 Anulowanie przetwarzania na parze {i}/{total_count}")
+                self._notify_pair_status(pair, 'cancelled')
                 break
 
             self.log(f"🔄 Processing pair {i}/{total_count}:")
+            self._notify_pair_status(pair, 'translating')
 
             success = self._run_single_translation(pair, config, i)
             if success:
                 success_count += 1
+                self._notify_pair_status(pair, 'done')
             elif cancel_event and cancel_event.is_set():
+                self._notify_pair_status(pair, 'cancelled')
                 break
+            else:
+                self._notify_pair_status(pair, 'failed')
 
+            self._notify_progress(i, total_count)
             self.log("─" * 30)
 
         if cancel_event and cancel_event.is_set():
@@ -134,15 +184,51 @@ class CLIRunner:
         if video_file:
             self.log(f"   🎬 Video: {video_file}")
 
-        # Build command
-        cmd = self._build_gst_command(subtitle_file, video_file, config)
+        # Build the list of models to try: primary first, then fallbacks
+        # (comma-separated, e.g. "gemini-3.5-flash,gemini-3-flash-preview").
+        models_to_try = self._get_models_to_try(config)
 
-        if not cmd:
-            self.log(f"❌ Failed to build command for pair {pair_number}")
-            return False
+        success = False
+        used_model = models_to_try[0]
 
-        # Execute command with cancellation support
-        success = self._execute_command(cmd, pair_number, cancel_event)
+        for attempt, model in enumerate(models_to_try):
+            if cancel_event and cancel_event.is_set():
+                return False
+
+            attempt_config = dict(config)
+            attempt_config['model'] = model
+
+            if attempt > 0:
+                self.log(f"🔁 Fallback model {attempt}/{len(models_to_try) - 1}: '{model}'")
+
+            # Build command; on fallback attempts add --resume so a partially
+            # translated file continues from the saved progress instead of
+            # hanging on the interactive "resume?" prompt.
+            cmd = self._build_gst_command(subtitle_file, video_file, attempt_config,
+                                          resume=attempt > 0)
+
+            if not cmd:
+                self.log(f"❌ Failed to build command for pair {pair_number}")
+                return False
+
+            # Execute command with cancellation support
+            success = self._execute_command(cmd, pair_number, cancel_event)
+
+            if success:
+                used_model = model
+                break
+
+            if cancel_event and cancel_event.is_set():
+                return False
+
+            if attempt < len(models_to_try) - 1:
+                self.log(f"⚠️ Model '{model}' failed (error/overloaded/quota) - trying next fallback model")
+            else:
+                self.log(f"❌ All models failed for pair {pair_number}: {', '.join(models_to_try)}")
+
+        # Report the actually used model so translator info is accurate
+        config = dict(config)
+        config['model'] = used_model
 
         # ADD TRANSLATOR INFO HERE - after successful processing
         if success and not (cancel_event and cancel_event.is_set()):
@@ -296,9 +382,36 @@ class CLIRunner:
 
         return result if result else filename_stem
 
-    def _build_gst_command(self, subtitle_file, video_file, config):
+    def _get_models_to_try(self, config):
+        """
+        Return the ordered list of models to try: primary model first,
+        then fallback models parsed from a comma-separated string
+        (e.g. "gemini-3.5-flash,gemini-3-flash-preview").
+        """
+        primary_model = config.get('model', 'gemini-2.5-flash')
+        fallback_raw = config.get('fallback_models', '') or ''
+        fallbacks = [m.strip() for m in str(fallback_raw).split(',') if m.strip()]
+
+        models = [primary_model]
+        for model in fallbacks:
+            if model not in models:
+                models.append(model)
+
+        if len(models) > 1:
+            self.log(f"   🛟 Fallback models: {', '.join(models[1:])}")
+
+        return models
+
+    def _build_gst_command(self, subtitle_file, video_file, config, resume=False):
         """Build the gst command based on configuration"""
-        cmd = [self.gst_cmd, 'translate']
+        cmd = [*self.gst_cmd, 'translate']
+        # Vendored copy: never try to pip-upgrade the package at runtime.
+        cmd.append('--skip-upgrade')
+        if resume:
+            # Fallback retry: auto-resume from saved progress without the
+            # interactive prompt (which would hang the GUI subprocess).
+            cmd.append('--resume')
+            self.log(f"   ⏯️ Resume: continuing from saved progress")
         if subtitle_file:
             subtitle_path = Path(subtitle_file)
             if not subtitle_path.name.endswith(("No match", "None")):
@@ -415,11 +528,13 @@ class CLIRunner:
                 elif not video_file:
                     self.log(f"   ℹ️ No video file - processing subtitle only")
 
-        # Add include timestamps flag if configured
+        # Add include timestamps flag if configured.
+        # NOTE: the vendored gemini_srt_translator CLI does not expose an
+        # --include-timestamps option, so we must not pass it (argparse would
+        # reject the whole command). Warn instead of silently failing.
         include_timestamps = config.get('include_timestamps', False)
         if include_timestamps:
-            cmd.append('--include-timestamps')
-            self.log(f"   ⏱️ Include timestamps: enabled")
+            self.log(f"   ⚠️ 'Include timestamps' is not supported by this version - ignoring")
 
         return cmd
 
@@ -436,6 +551,15 @@ class CLIRunner:
             # Enterprise cloud_api_key (requiring OAuth2), which conflicts with
             # regular Gemini API key auth passed via -k flag.
             env.pop('GOOGLE_API_KEY', None)
+            # Ensure the vendored gemini_srt_translator package (in the repo
+            # root) takes precedence when running `python -m gemini_srt_translator`.
+            if self.gst_root:
+                existing_pp = env.get('PYTHONPATH', '')
+                env['PYTHONPATH'] = (
+                    str(self.gst_root) + os.pathsep + existing_pp
+                    if existing_pp
+                    else str(self.gst_root)
+                )
 
             # Start process with explicit encoding
             process = subprocess.Popen(

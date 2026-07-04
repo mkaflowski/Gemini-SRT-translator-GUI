@@ -1,2 +1,5 @@
-/gui_config.json
+gui_config.json
 /.idea/
+__pycache__/
+*.egg-info/
+/tempgst_check/

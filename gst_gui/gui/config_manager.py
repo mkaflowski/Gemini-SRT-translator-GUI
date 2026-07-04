@@ -1,11 +1,83 @@
 """
 Configuration manager for the GUI application.
 Handles loading, saving, and managing application settings.
+
+API keys are stored encrypted: on Windows via DPAPI (tied to the current
+Windows user account, no extra dependencies), elsewhere via light
+base64+XOR obfuscation. Legacy plaintext configs load transparently and
+get encrypted on the next save.
 """
 
+import base64
+import getpass
 import json
 from pathlib import Path
 import platform
+
+# Config fields that hold secrets and get encrypted on disk
+_SENSITIVE_KEYS = ('gemini_api_key', 'gemini_api_key2', 'tmdb_api_key')
+_DPAPI_PREFIX = 'dpapi:'
+_OBF_PREFIX = 'obf:'
+
+
+def _dpapi_crypt(data, encrypt):
+    """Encrypt/decrypt bytes with Windows DPAPI (current user scope)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [('cbData', wintypes.DWORD),
+                    ('pbData', ctypes.POINTER(ctypes.c_char))]
+
+    buf = ctypes.create_string_buffer(data, len(data))
+    blob_in = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    blob_out = DATA_BLOB()
+
+    func = (ctypes.windll.crypt32.CryptProtectData if encrypt
+            else ctypes.windll.crypt32.CryptUnprotectData)
+    if not func(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+        raise OSError('DPAPI call failed')
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def _xor_bytes(data):
+    """Light XOR obfuscation keyed on the OS username (non-Windows fallback)."""
+    key = (getpass.getuser() + 'gst-gui-cfg').encode('utf-8')
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+
+def _encrypt_value(value):
+    """Encrypt a secret string for storage. Empty values stay empty."""
+    if not value:
+        return value
+    raw = value.encode('utf-8')
+    if platform.system() == 'Windows':
+        try:
+            return _DPAPI_PREFIX + base64.b64encode(_dpapi_crypt(raw, encrypt=True)).decode('ascii')
+        except Exception:
+            pass  # fall back to obfuscation
+    return _OBF_PREFIX + base64.b64encode(_xor_bytes(raw)).decode('ascii')
+
+
+def _decrypt_value(stored):
+    """Decrypt a stored secret. Plain (legacy) values pass through unchanged."""
+    if not isinstance(stored, str) or not stored:
+        return stored
+    try:
+        if stored.startswith(_DPAPI_PREFIX):
+            raw = base64.b64decode(stored[len(_DPAPI_PREFIX):])
+            return _dpapi_crypt(raw, encrypt=False).decode('utf-8')
+        if stored.startswith(_OBF_PREFIX):
+            raw = base64.b64decode(stored[len(_OBF_PREFIX):])
+            return _xor_bytes(raw).decode('utf-8')
+    except Exception:
+        print('⚠️ Could not decrypt a stored API key (config copied from '
+              'another machine/user account?) - please re-enter it')
+        return ''
+    return stored  # legacy plaintext value
 
 
 class ConfigManager:
@@ -29,6 +101,7 @@ class ConfigManager:
             'gemini_api_key': '',
             'gemini_api_key2': '',
             'model': 'gemini-2.5-flash',
+            'fallback_models': '',
             'tmdb_api_key': '',
             'tmdb_id': '',
             'api_expanded': False,
@@ -48,7 +121,7 @@ class ConfigManager:
 
     @staticmethod
     def _get_config_path():
-        """
+        r"""
         Get platform-specific config directory path.
         - Windows: %APPDATA%\Gemini-SRT-Translator\
         - macOS: ~/Library/Application Support/Gemini-SRT-Translator/
@@ -69,6 +142,12 @@ class ConfigManager:
         """Check if second Gemini API key is configured"""
         return bool(self.get('gemini_api_key2', '').strip())
 
+    def _decrypt_sensitive(self):
+        """Decrypt sensitive fields in the in-memory config (in place)"""
+        for key in _SENSITIVE_KEYS:
+            if key in self.config:
+                self.config[key] = _decrypt_value(self.config[key])
+
     def load_config(self):
         """Load configuration from JSON file"""
         try:
@@ -77,6 +156,7 @@ class ConfigManager:
                     loaded_config = json.load(f)
                     # Merge with defaults to ensure all keys exist
                     self.config = {**self._default_config, **loaded_config}
+                    self._decrypt_sensitive()
                     print(f"✅ Configuration loaded from: {self.config_file}")
             else:
                 self.config = self._default_config.copy()
@@ -86,10 +166,14 @@ class ConfigManager:
             self.config = self._default_config.copy()
 
     def save_config(self):
-        """Save current configuration to JSON file"""
+        """Save current configuration to JSON file (API keys encrypted)"""
         try:
+            to_save = dict(self.config)
+            for key in _SENSITIVE_KEYS:
+                if to_save.get(key):
+                    to_save[key] = _encrypt_value(to_save[key])
             with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
+                json.dump(to_save, f, indent=2, ensure_ascii=False)
             print(f"✅ Configuration saved to: {self.config_file}")
             return True
         except Exception as e:
@@ -114,6 +198,7 @@ class ConfigManager:
             'gemini_api_key': self.get('gemini_api_key', ''),
             'gemini_api_key2': self.get('gemini_api_key2', ''),
             'model': self.get('model', 'gemini-pro'),
+            'fallback_models': self.get('fallback_models', ''),
             'tmdb_api_key': self.get('tmdb_api_key', '')
         }
 
@@ -185,6 +270,7 @@ class ConfigManager:
                 imported_config = json.load(f)
                 # Validate and merge with defaults
                 self.config = {**self._default_config, **imported_config}
+                self._decrypt_sensitive()
             print(f"✅ Configuration imported from: {file_path}")
             return True
         except Exception as e:

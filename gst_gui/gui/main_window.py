@@ -45,6 +45,47 @@ try:
 except ImportError:
     from gst_gui.utils.cli_runner import CLIRunner
 
+from gst_gui.utils.subtitle_tracks import (
+    probe_subtitle_tracks,
+    format_track_label,
+    pick_matching_track,
+    extract_subtitle_track,
+)
+from gst_gui.utils import video_description_with_splitting as vdesc
+
+
+class _ConsoleStdout:
+    """
+    File-like object that forwards captured stdout to a GUI logger, line by line.
+    Handles '\\r' progress updates (keeps only the latest partial line, like a terminal).
+    """
+
+    def __init__(self, log_func):
+        self._log = log_func
+        self._buffer = ""
+
+    def write(self, text):
+        if not text:
+            return
+        self._buffer += text
+        # Normalise carriage returns: keep only text after the last '\r' on a line
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if "\r" in line:
+                line = line.rsplit("\r", 1)[-1]
+            line = line.rstrip()
+            if line:
+                self._log(line)
+
+    def flush(self):
+        rest = self._buffer
+        self._buffer = ""
+        if "\r" in rest:
+            rest = rest.rsplit("\r", 1)[-1]
+        rest = rest.rstrip()
+        if rest:
+            self._log(rest)
+
 
 class DragDropGUI:
     """Main GUI class that coordinates all handlers"""
@@ -94,8 +135,12 @@ class DragDropGUI:
         # Initialize configuration manager
         self.config_manager = ConfigManager()
 
-        # Initialize CLI runner with logger
-        self.cli_runner = CLIRunner(logger=self.log_to_console)
+        # Initialize CLI runner with logger and progress/status callbacks
+        self.cli_runner = CLIRunner(
+            logger=self.log_to_console,
+            progress_callback=self._on_translation_progress,
+            pair_status_callback=self._on_pair_status
+        )
 
         # Store current folder path for building full file paths
         self.current_folder_path = None
@@ -183,15 +228,17 @@ class DragDropGUI:
 
     def _setup_ui(self):
         """Setup the user interface with hidden scrollbar when not needed"""
+        # Sticky bottom action bar - packed FIRST (side=bottom) so it is always
+        # visible regardless of how much content the scrollable area holds.
+        self._create_bottom_bar()
+
         # Create a scrollable frame with default styling
         self.scrollable_frame = ctk.CTkScrollableFrame(
             self.root,
-            width=1160,  # Slightly smaller than window
-            height=860,  # Slightly smaller than window
             corner_radius=0,
             fg_color="transparent"  # Make it blend with the background
         )
-        self.scrollable_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        self.scrollable_frame.pack(fill="both", expand=True, padx=20, pady=(20, 0))
 
         # Use scrollable_frame as the main container
         self.main_frame = self.scrollable_frame
@@ -201,16 +248,13 @@ class DragDropGUI:
         self._create_treeview()
         self._create_console()
         self._create_config_sections()
-        self._create_action_buttons()
-        self._create_status_bar()
 
         # Hide scrollbar by default on startup
         self.root.after(100, self._hide_scrollbar_initially)
         # Then start monitoring for when it's needed
         self.root.after(500, self._manage_scrollbar_visibility)
 
-        # Check for updates in background (non-blocking)
-        self.root.after(1500, self._check_gst_update)
+        # Check for app updates in background (non-blocking)
         self.root.after(2000, self._check_app_update)
 
     def _create_drop_area(self):
@@ -236,14 +280,57 @@ class DragDropGUI:
 
     def _create_treeview(self):
         """Create the TreeView for file pairs"""
-        # TreeView section label with reduced margins
-        treeview_label = ctk.CTkLabel(self.main_frame, text="Found files:", font=ctk.CTkFont(size=14, weight="bold"))
-        treeview_label.pack(anchor="w", pady=(0, 5))  # Reduced from (0, 10) to (0, 5)
+        # TreeView header: label + selection controls
+        tree_header = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        tree_header.pack(fill="x", pady=(0, 5))
+
+        treeview_label = ctk.CTkLabel(tree_header, text="Found files:", font=ctk.CTkFont(size=14, weight="bold"))
+        treeview_label.pack(side="left")
+
+        self.selected_count_label = ctk.CTkLabel(
+            tree_header, text="", text_color="gray", font=ctk.CTkFont(size=11)
+        )
+        self.selected_count_label.pack(side="left", padx=(10, 0))
+
+        deselect_all_button = ctk.CTkButton(
+            tree_header, text="☐ None", command=self.deselect_all_items,
+            width=70, height=24, font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1, text_color=("gray30", "gray70")
+        )
+        deselect_all_button.pack(side="right", padx=(5, 0))
+
+        select_all_button = ctk.CTkButton(
+            tree_header, text="☑ All", command=self.select_all_items,
+            width=70, height=24, font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1, text_color=("gray30", "gray70")
+        )
+        select_all_button.pack(side="right")
+
+        self.embedded_subs_button = ctk.CTkButton(
+            tree_header, text="🎞 Embedded subs", command=self.choose_embedded_subtitles,
+            width=130, height=24, font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1, text_color=("gray30", "gray70")
+        )
+        self.embedded_subs_button.pack(side="right", padx=(0, 10))
+
+        self.describe_video_button = ctk.CTkButton(
+            tree_header, text="📝 Describe video", command=self.describe_video,
+            width=130, height=24, font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1, text_color=("gray30", "gray70")
+        )
+        self.describe_video_button.pack(side="right", padx=(0, 10))
+
+        # Cache of probed subtitle tracks: {full video path: [track dicts]}
+        self._embedded_tracks_cache = {}
 
         # Frame for TreeView (still using tkinter TreeView as CustomTkinter doesn't have equivalent)
-        self.tree_frame = ctk.CTkFrame(self.main_frame, height=200)  # Fixed height to make it 50% shorter
+        self.tree_frame = ctk.CTkFrame(self.main_frame, height=200)
         self.tree_frame.pack(fill="x", pady=(0, 10))  # Reduced from (0, 20) to (0, 10)
         self.tree_frame.pack_propagate(False)  # Prevent frame from shrinking
+
+        # Grow the tree with the window height (extra vertical space goes here)
+        self._tree_resize_job = None
+        self.root.bind('<Configure>', self._on_root_resize, add='+')
 
         # Create a tkinter frame inside the CustomTkinter frame for the TreeView
         self.tree_container = tk.Frame(self.tree_frame, bg="#1a1a1a")  # Dark background
@@ -396,11 +483,37 @@ class DragDropGUI:
         self.tree.tag_configure('unchecked',
                                 background='#404040',
                                 foreground='#888888')
+        # Live translation status tags
+        self.tree.tag_configure('translating',
+                                background='#1f538d',
+                                foreground='#ffffff')
+        self.tree.tag_configure('done',
+                                background='#2d5a2d',
+                                foreground='#ffffff')
+        self.tree.tag_configure('failed',
+                                background='#7a2d2d',
+                                foreground='#ffffff')
 
     def _create_console(self):
         """Create the console output area"""
-        console_label = ctk.CTkLabel(self.main_frame, text="Console output:", font=ctk.CTkFont(size=14, weight="bold"))
-        console_label.pack(anchor="w", pady=(0, 5))  # Reduced from (0, 10) to (0, 5)
+        console_header = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        console_header.pack(fill="x", pady=(0, 5))
+
+        console_label = ctk.CTkLabel(console_header, text="Console output:", font=ctk.CTkFont(size=14, weight="bold"))
+        console_label.pack(side="left")
+
+        self.clear_console_button = ctk.CTkButton(
+            console_header,
+            text="🗑 Clear",
+            command=self.clear_console,
+            width=70,
+            height=24,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray30", "gray70")
+        )
+        self.clear_console_button.pack(side="right")
 
         # Console frame - made 50% shorter with fixed height
         self.console_frame = ctk.CTkFrame(self.main_frame, height=150)  # Fixed height to make it 50% shorter
@@ -427,79 +540,113 @@ class DragDropGUI:
         self.console_text.pack(fill="both", expand=True)
 
     def _create_config_sections(self):
-        """Create expandable configuration sections"""
+        """Create configuration area: always-visible language row + tabbed sections"""
         # Configuration Sections Container
         self.config_container = ctk.CTkFrame(self.main_frame)
         self.config_container.pack(fill="x", pady=(0, 20))
 
-        # Get UI config
+        # Get UI config (kept for config-file compatibility)
         ui_config = self.config_manager.get_ui_config()
-
-        # Headers frame for both API and Settings buttons
-        self.headers_frame = ctk.CTkFrame(self.config_container)
-        self.headers_frame.pack(fill="x", padx=10, pady=10)
-
-        # API Configuration Section - Expandable
         self.api_expanded = tk.BooleanVar(value=ui_config['api_expanded'])
-        self.expand_api_button = ctk.CTkButton(
-            self.headers_frame,
-            text="▶ Show API options",
-            command=self.toggle_api_section,
-            width=150,
-            height=32
-        )
-        self.expand_api_button.pack(side="left", padx=(0, 10))
-
-        # Settings Section - Expandable
         self.settings_expanded = tk.BooleanVar(value=ui_config['settings_expanded'])
-        self.expand_settings_button = ctk.CTkButton(
-            self.headers_frame,
-            text="▶ Settings",
-            command=self.toggle_settings_section,
-            width=100,
-            height=32
-        )
-        self.expand_settings_button.pack(side="left")
 
-        # Create the actual configuration forms
+        processing_config = self.config_manager.get_processing_config()
+
+        # Always-visible row: target language (the most frequently changed setting)
+        language_row = ctk.CTkFrame(self.config_container, fg_color="transparent")
+        language_row.pack(fill="x", padx=10, pady=(10, 0))
+
+        ctk.CTkLabel(language_row, text="Target language:",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(side="left", padx=(10, 5))
+        self.language = tk.StringVar(value=processing_config['language'])
+        self.language_entry = ctk.CTkEntry(language_row, textvariable=self.language, width=150)
+        self.language_entry.pack(side="left", padx=(0, 20))
+
+        ctk.CTkLabel(language_row, text="Code:").pack(side="left", padx=(0, 5))
+        self.language_code = tk.StringVar(value=processing_config.get('language_code', 'pl'))
+        self.language_code_entry = ctk.CTkEntry(language_row, textvariable=self.language_code, width=60)
+        self.language_code_entry.pack(side="left", padx=(0, 20))
+
+        # Tabbed sections instead of expandable buttons
+        self.config_tabview = ctk.CTkTabview(self.config_container, height=280)
+        self.config_tabview.pack(fill="x", padx=10, pady=(5, 10))
+        self.config_tabview.add("Settings")
+        self.config_tabview.add("API keys")
+
+        # Create the actual configuration forms inside the tabs
         self._create_api_options()
         self._create_settings_options()
 
-        # Set initial states
-        if self.api_expanded.get():
-            self.toggle_api_section()
-        if self.settings_expanded.get():
-            self.toggle_settings_section()
+    def _make_key_reveal_button(self, parent, entry):
+        """Create a small eye-toggle button that reveals/hides a masked entry"""
+        def toggle():
+            if entry.cget("show") == "*":
+                entry.configure(show="")
+                button.configure(text="🙈")
+            else:
+                entry.configure(show="*")
+                button.configure(text="👁")
+
+        button = ctk.CTkButton(
+            parent,
+            text="👁",
+            command=toggle,
+            width=32,
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray30", "gray70")
+        )
+        return button
 
     def _create_api_options(self):
-        """Create API configuration options"""
-        # API options frame (initially hidden)
-        self.api_options_frame = ctk.CTkFrame(self.config_container)
+        """Create API configuration options (inside the 'API keys' tab)"""
+        self.api_options_frame = self.config_tabview.tab("API keys")
 
         api_config = self.config_manager.get_api_config()
 
         # Row 1: Gemini API Key and Model
-        row1_frame = ctk.CTkFrame(self.api_options_frame)
+        row1_frame = ctk.CTkFrame(self.api_options_frame, fg_color="transparent")
         row1_frame.pack(fill="x", padx=10, pady=(10, 5))
 
         # Gemini API Key
         ctk.CTkLabel(row1_frame, text="Gemini API Key:").pack(side="left", padx=(10, 5))
         self.gemini_api_key = tk.StringVar(value=api_config['gemini_api_key'])
         self.gemini_entry = ctk.CTkEntry(row1_frame, textvariable=self.gemini_api_key, show="*", width=300)
-        self.gemini_entry.pack(side="left", padx=(0, 20))
+        self.gemini_entry.pack(side="left", padx=(0, 5))
+        self._make_key_reveal_button(row1_frame, self.gemini_entry).pack(side="left", padx=(0, 20))
 
-        row1_5_frame = ctk.CTkFrame(self.api_options_frame)
+        row1_5_frame = ctk.CTkFrame(self.api_options_frame, fg_color="transparent")
         row1_5_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         ctk.CTkLabel(row1_5_frame, text="Gemini API Key 2 (optional):").pack(side="left", padx=(10, 5))
         self.gemini_api_key2 = tk.StringVar(value=api_config.get('gemini_api_key2', ''))
         self.gemini_entry2 = ctk.CTkEntry(row1_5_frame, textvariable=self.gemini_api_key2, show="*", width=300)
-        self.gemini_entry2.pack(side="left", padx=(0, 20))
+        self.gemini_entry2.pack(side="left", padx=(0, 5))
+        self._make_key_reveal_button(row1_5_frame, self.gemini_entry2).pack(side="left", padx=(0, 5))
 
         # Info label for second key
         info_label = ctk.CTkLabel(row1_5_frame, text="ℹ️ Used as fallback", text_color="gray",
                                   font=ctk.CTkFont(size=10))
         info_label.pack(side="left", padx=(0, 10))
+
+        # Row 1.6: Fallback models
+        row1_6_frame = ctk.CTkFrame(self.api_options_frame, fg_color="transparent")
+        row1_6_frame.pack(fill="x", padx=10, pady=(5, 5))
+
+        ctk.CTkLabel(row1_6_frame, text="Fallback models (optional):").pack(side="left", padx=(10, 5))
+        self.fallback_models = tk.StringVar(value=api_config.get('fallback_models', ''))
+        self.fallback_models_entry = ctk.CTkEntry(row1_6_frame, textvariable=self.fallback_models, width=300,
+                                                  placeholder_text="gemini-3.5-flash,gemini-3-flash-preview")
+        self.fallback_models_entry.pack(side="left", padx=(0, 20))
+
+        fallback_info_label = ctk.CTkLabel(
+            row1_6_frame,
+            text="ℹ️ Comma-separated, tried in order when the model fails (error/overloaded/quota)",
+            text_color="gray",
+            font=ctk.CTkFont(size=10)
+        )
+        fallback_info_label.pack(side="left", padx=(0, 10))
 
         # Model
         ctk.CTkLabel(row1_frame, text="Model:").pack(side="left", padx=(10, 5))
@@ -528,34 +675,24 @@ class DragDropGUI:
         self.fetch_models_button.bind("<Leave>", lambda e: self._hide_fetch_models_tooltip())
 
         # Row 2: TMDB API Key
-        row2_frame = ctk.CTkFrame(self.api_options_frame)
+        row2_frame = ctk.CTkFrame(self.api_options_frame, fg_color="transparent")
         row2_frame.pack(fill="x", padx=10, pady=(5, 10))
 
         ctk.CTkLabel(row2_frame, text="TMDB API Key (optional):").pack(side="left", padx=(10, 5))
         self.tmdb_api_key = tk.StringVar(value=api_config['tmdb_api_key'])
         self.tmdb_entry = ctk.CTkEntry(row2_frame, textvariable=self.tmdb_api_key, show="*", width=300)
-        self.tmdb_entry.pack(side="left", padx=(0, 10))
+        self.tmdb_entry.pack(side="left", padx=(0, 5))
+        self._make_key_reveal_button(row2_frame, self.tmdb_entry).pack(side="left", padx=(0, 10))
 
     def _create_settings_options(self):
-        """Create general settings options"""
-        # Settings options frame (initially hidden)
-        self.settings_options_frame = ctk.CTkFrame(self.config_container)
+        """Create general settings options (inside the 'Settings' tab)"""
+        self.settings_options_frame = self.config_tabview.tab("Settings")
 
         processing_config = self.config_manager.get_processing_config()
 
-        # Row 1: Language and Language Code
-        row1_frame = ctk.CTkFrame(self.settings_options_frame)
+        # Row 1: processing options
+        row1_frame = ctk.CTkFrame(self.settings_options_frame, fg_color="transparent")
         row1_frame.pack(fill="x", padx=10, pady=(10, 5))
-
-        ctk.CTkLabel(row1_frame, text="Language:").pack(side="left", padx=(10, 5))
-        self.language = tk.StringVar(value=processing_config['language'])
-        self.language_entry = ctk.CTkEntry(row1_frame, textvariable=self.language, width=150)
-        self.language_entry.pack(side="left", padx=(0, 20))
-
-        ctk.CTkLabel(row1_frame, text="Code:").pack(side="left", padx=(10, 5))
-        self.language_code = tk.StringVar(value=processing_config.get('language_code', 'pl'))
-        self.language_code_entry = ctk.CTkEntry(row1_frame, textvariable=self.language_code, width=60)
-        self.language_code_entry.pack(side="left", padx=(0, 20))
 
         # Extract audio checkbox
         self.extract_audio = tk.BooleanVar(value=processing_config['extract_audio'])
@@ -584,7 +721,7 @@ class DragDropGUI:
         batch_info_label.bind("<Leave>", lambda e: self._hide_batch_tooltip())
 
         # Row 2: TMDB ID and TV Series
-        row2_frame = ctk.CTkFrame(self.settings_options_frame)
+        row2_frame = ctk.CTkFrame(self.settings_options_frame, fg_color="transparent")
         row2_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         ctk.CTkLabel(row2_frame, text="TMDB ID:").pack(side="left", padx=(10, 5))
@@ -592,7 +729,7 @@ class DragDropGUI:
         self.tmdb_id_entry = ctk.CTkEntry(row2_frame, textvariable=self.tmdb_id, width=120)
         self.tmdb_id_entry.pack(side="left", padx=(0, 10))
 
-        row2_5_frame = ctk.CTkFrame(self.settings_options_frame)
+        row2_5_frame = ctk.CTkFrame(self.settings_options_frame, fg_color="transparent")
         row2_5_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         ctk.CTkLabel(row2_5_frame, text="Translation type:").pack(side="left", padx=(10, 5))
@@ -621,7 +758,7 @@ class DragDropGUI:
         self.tv_series_check.pack(side="left", padx=(10, 0))
 
         # Row 3: Overview
-        row3_frame = ctk.CTkFrame(self.settings_options_frame)
+        row3_frame = ctk.CTkFrame(self.settings_options_frame, fg_color="transparent")
         row3_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         ctk.CTkLabel(row3_frame, text="Overview:").pack(side="left", padx=(10, 5), anchor="n")
@@ -629,7 +766,7 @@ class DragDropGUI:
         self.overview_textbox.pack(side="left", padx=(0, 10), fill="x", expand=True)
 
         # Row 4: Auto-fetch and Add translator info
-        row4_frame = ctk.CTkFrame(self.settings_options_frame)
+        row4_frame = ctk.CTkFrame(self.settings_options_frame, fg_color="transparent")
         row4_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         self.auto_fetch_tmdb = tk.BooleanVar(value=processing_config['auto_fetch_tmdb'])
@@ -643,7 +780,7 @@ class DragDropGUI:
         self.add_translator_info_check.pack(side="left", padx=(10, 0))
 
         # Row 5: Poster image
-        row5_frame = ctk.CTkFrame(self.settings_options_frame)
+        row5_frame = ctk.CTkFrame(self.settings_options_frame, fg_color="transparent")
         row5_frame.pack(fill="x", padx=10, pady=(5, 10))
 
         ctk.CTkLabel(row5_frame, text="Poster:").pack(side="left", padx=(10, 5))
@@ -698,36 +835,6 @@ class DragDropGUI:
             self.fetch_models_tooltip.destroy()
             self.fetch_models_tooltip = None
 
-    def _check_gst_update(self):
-        """Check PyPI for a newer version of gemini-srt-translator (background thread)."""
-        import threading
-
-        def _fetch():
-            try:
-                import importlib.metadata
-                import requests
-
-                current = importlib.metadata.version('gemini-srt-translator')
-                resp = requests.get(
-                    'https://pypi.org/pypi/gemini-srt-translator/json',
-                    timeout=5
-                )
-                if resp.status_code != 200:
-                    return
-                latest = resp.json()['info']['version']
-
-                from packaging.version import Version
-                if Version(latest) > Version(current):
-                    self.root.after(0, lambda: self._notify_gst_update(current, latest))
-                else:
-                    self.root.after(0, lambda: self.log_to_console(
-                        f"✅ gemini-srt-translator {current} jest aktualna"
-                    ))
-            except Exception:
-                pass  # silent – no internet or package not found
-
-        threading.Thread(target=_fetch, daemon=True).start()
-
     def _check_app_update(self):
         """Check GitHub for a newer version of this GUI app (background thread)."""
         import threading
@@ -760,50 +867,13 @@ class DragDropGUI:
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _notify_app_update(self, current, latest):
-        """Show GUI app update notification."""
+        """Show a non-blocking app update notice (console + status bar)."""
         self.log_to_console(
-            f"🆕 Dostępna nowa wersja aplikacji: {current} → {latest}"
+            f"🆕 Dostępna nowa wersja aplikacji: {current} → {latest}\n"
+            f"   Pobierz: https://github.com/mkaflowski/Gemini-SRT-translator-GUI"
         )
-        messagebox.showinfo(
-            "Aktualizacja aplikacji",
-            f"Dostępna jest nowa wersja Gemini SRT Translator GUI:\n\n"
-            f"  Aktualna: {current}\n"
-            f"  Nowa:     {latest}\n\n"
-            f"Pobierz najnowszą wersję z:\n"
-            f"https://github.com/mkaflowski/Gemini-SRT-translator-GUI"
-        )
-
-    def _notify_gst_update(self, current, latest):
-        """Show update notification in console and optionally offer to upgrade."""
-        self.log_to_console(
-            f"🆕 Dostępna nowa wersja gemini-srt-translator: {current} → {latest}"
-        )
-        if messagebox.askyesno(
-            "Aktualizacja dostępna",
-            f"Dostępna jest nowa wersja gemini-srt-translator:\n\n"
-            f"  Aktualna: {current}\n"
-            f"  Nowa:     {latest}\n\n"
-            f"Zaktualizować teraz?"
-        ):
-            import subprocess, sys, threading
-
-            def _upgrade():
-                self.root.after(0, lambda: self.log_to_console("⏳ Aktualizowanie..."))
-                result = subprocess.run(
-                    [sys.executable, '-m', 'pip', 'install',
-                     f'gemini-srt-translator=={latest}'],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    self.root.after(0, lambda: self.log_to_console(
-                        f"✅ Zaktualizowano do {latest} – uruchom ponownie aplikację"
-                    ))
-                else:
-                    self.root.after(0, lambda: self.log_to_console(
-                        f"❌ Błąd aktualizacji: {result.stderr[:200]}"
-                    ))
-
-            threading.Thread(target=_upgrade, daemon=True).start()
+        if hasattr(self, 'status_var'):
+            self.status_var.set(f"Update available: {current} → {latest} (see console)")
 
     def fetch_gemini_models(self):
         """Fetch available models from Gemini API"""
@@ -889,16 +959,25 @@ class DragDropGUI:
         self.log_to_console(f"❌ Failed to fetch models: {error_msg}")
         messagebox.showerror("Fetch Models Error", f"Could not fetch models:\n{error_msg}")
 
-    def _create_action_buttons(self):
-        """Create action buttons"""
-        self.buttons_frame = ctk.CTkFrame(self.main_frame)
-        self.buttons_frame.pack(fill="x", pady=(0, 10))
+    def _create_bottom_bar(self):
+        """Create the sticky bottom action bar (always visible, outside scroll area)"""
+        self.bottom_bar = ctk.CTkFrame(self.root, corner_radius=0)
+        self.bottom_bar.pack(side="bottom", fill="x")
+
+        # Progress bar (hidden while idle)
+        self.progress_bar = ctk.CTkProgressBar(self.bottom_bar, height=8)
+        self.progress_bar.set(0)
+        # not packed initially - shown when translation starts
+
+        # Buttons container
+        self.buttons_frame = ctk.CTkFrame(self.bottom_bar, fg_color="transparent")
+        self.buttons_frame.pack(fill="x")
 
         # Translate Button
         self.translate_button = ctk.CTkButton(
             self.buttons_frame,
             text="🌐 TRANSLATE",
-            command=self._start_translation,  # New simplified method
+            command=self._start_translation,
             font=ctk.CTkFont(size=16, weight="bold"),
             height=50,
             fg_color=("green", "darkgreen"),
@@ -910,12 +989,65 @@ class DragDropGUI:
         self.cancel_button = ctk.CTkButton(
             self.buttons_frame,
             text="❌ CANCEL",
-            command=self._cancel_translation,  # New simplified method
+            command=self._cancel_translation,
             font=ctk.CTkFont(size=16, weight="bold"),
             height=50,
             fg_color=("red", "darkred"),
             hover_color=("lightcoral", "red")
         )
+
+        # Status label at the very bottom
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_bar = ctk.CTkLabel(
+            self.bottom_bar,
+            textvariable=self.status_var,
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent"
+        )
+        self.status_bar.pack(fill="x", pady=(0, 6))
+
+    def _show_progress_bar(self):
+        """Show and reset the progress bar (call when translation starts)"""
+        self.progress_bar.set(0)
+        self.progress_bar.pack(fill="x", padx=20, pady=(10, 0), before=self.buttons_frame)
+
+    def _hide_progress_bar(self):
+        """Hide the progress bar (call when translation ends)"""
+        self.progress_bar.pack_forget()
+
+    def _on_translation_progress(self, completed, total):
+        """Progress callback from CLIRunner (worker thread - marshal to UI thread)"""
+        def update():
+            if total > 0:
+                self.progress_bar.set(completed / total)
+                if 0 < completed < total:
+                    self.status_var.set(f"Translating... {completed}/{total} done")
+        self.root.after(0, update)
+
+    def _on_pair_status(self, pair, status):
+        """Per-pair status callback from CLIRunner (worker thread - marshal to UI thread)"""
+        status_map = {
+            'translating': ('⏳ Translating...', 'translating'),
+            'done': ('✅ Translated', 'done'),
+            'failed': ('❌ Error', 'failed'),
+            'cancelled': ('🛑 Cancelled', 'unchecked'),
+        }
+        text, tag = status_map.get(status, (status, 'matched'))
+
+        subtitle_name = Path(pair['subtitle']).name if pair.get('subtitle') else None
+        video_name = Path(pair['video']).name if pair.get('video') else None
+
+        def update():
+            for item in self.tree.get_children():
+                values = list(self.tree.item(item, 'values'))
+                if len(values) < 6:
+                    continue
+                if (subtitle_name and values[0] == subtitle_name) or \
+                        (not subtitle_name and video_name and values[1] == video_name):
+                    values[5] = text
+                    self.tree.item(item, values=values, tags=(tag,))
+                    break
+        self.root.after(0, update)
 
     def _start_translation(self):
         """Start translation using translation manager"""
@@ -949,13 +1081,14 @@ class DragDropGUI:
             'gemini_api_key': self.gemini_api_key.get(),
             'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
             'model': self.model.get(),
+            'fallback_models': self.fallback_models.get() if hasattr(self, 'fallback_models') else '',
             'tmdb_api_key': self.tmdb_api_key.get(),
             'tmdb_id': self.tmdb_id.get(),
             'language': self.language.get(),
             'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
             'extract_audio': self.extract_audio.get(),
             'include_timestamps': self.include_timestamps.get() if hasattr(self, 'include_timestamps') else False,
-            'overview': self.overview.get() if hasattr(self, 'overview') else '',
+            'overview': self.overview_textbox.get("1.0", "end-1c").strip() if hasattr(self, 'overview_textbox') else '',
             'movie_title': self._get_movie_title_from_treeview(),
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
             'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
@@ -965,38 +1098,44 @@ class DragDropGUI:
 
     # Keep these methods for the translation manager to call:
     def show_cancel_button(self):
-        """Show cancel button and hide translate button"""
-        self.translate_button.pack_forget()
-        self.cancel_button.pack(fill="x", padx=20, pady=10)
+        """Show cancel button and hide translate button (translation started)"""
+        def update():
+            self.translate_button.pack_forget()
+            self.cancel_button.pack(fill="x", padx=20, pady=10)
+            self._show_progress_bar()
+        # May be called from the translation worker thread - marshal to UI thread
+        self.root.after(0, update)
 
     def show_translate_button(self):
-        """Show translate button and hide cancel button"""
-        self.cancel_button.pack_forget()
-        self.translate_button.pack(fill="x", padx=20, pady=10)
+        """Show translate button and hide cancel button (translation ended)"""
+        def update():
+            self.cancel_button.pack_forget()
+            self.translate_button.pack(fill="x", padx=20, pady=10)
+            self._hide_progress_bar()
+        self.root.after(0, update)
 
     def _hide_dropdown_menus(self):
-        """Hide both API and Settings dropdown menus"""
-        if self.api_expanded.get():
-            self.api_options_frame.pack_forget()
-            self.expand_api_button.configure(text="▶ Show API options")
-            self.api_expanded.set(False)
+        """No-op: config sections are permanent tabs now (kept for compatibility)"""
+        pass
 
-        if self.settings_expanded.get():
-            self.settings_options_frame.pack_forget()
-            self.expand_settings_button.configure(text="▶ Settings")
-            self.settings_expanded.set(False)
+    def _on_root_resize(self, event):
+        """Give extra vertical space to the file tree when the window grows (debounced)"""
+        if event.widget is not self.root:
+            return
+        if self._tree_resize_job:
+            self.root.after_cancel(self._tree_resize_job)
+        self._tree_resize_job = self.root.after(150, self._apply_tree_height)
 
-    def _create_status_bar(self):
-        """Create status bar"""
-        self.status_var = tk.StringVar(value="Ready")
-        self.status_bar = ctk.CTkLabel(
-            self.main_frame,
-            textvariable=self.status_var,
-            font=ctk.CTkFont(size=12),
-            corner_radius=0,
-            fg_color="transparent"
-        )
-        self.status_bar.pack(fill="x", pady=(0, 5))  # Reduced from (0, 10) to (0, 5)
+    def _apply_tree_height(self):
+        """Resize tree frame based on current window height"""
+        self._tree_resize_job = None
+        try:
+            window_height = self.root.winfo_height()
+            # ~700px is taken by drop area, console, config tabs and bottom bar
+            new_height = max(200, window_height - 700)
+            self.tree_frame.configure(height=new_height)
+        except Exception:
+            pass
 
     def _hide_scrollbar_initially(self):
         """Hide scrollbar on app startup for a clean initial appearance"""
@@ -1055,36 +1194,12 @@ class DragDropGUI:
         self.root.after(2000, self._manage_scrollbar_visibility)  # Check every 2 seconds
 
     def toggle_api_section(self):
-        """Toggle the visibility of API configuration section"""
-        if self.api_expanded.get():
-            # Hide API options
-            self.api_options_frame.pack_forget()
-            self.expand_api_button.configure(text="▶ Show API options")
-            self.api_expanded.set(False)
-        else:
-            # Show API options
-            self.api_options_frame.pack(fill="x", padx=10, pady=(5, 0))
-            self.expand_api_button.configure(text="▼ Hide API options")
-            self.api_expanded.set(True)
-
-        # Update scrollbar visibility after layout change
-        self.root.after(100, self._manage_scrollbar_visibility)
+        """Switch to the API keys tab (sections are tabs now)"""
+        self.config_tabview.set("API keys")
 
     def toggle_settings_section(self):
-        """Toggle the visibility of Settings section"""
-        if self.settings_expanded.get():
-            # Hide Settings options
-            self.settings_options_frame.pack_forget()
-            self.expand_settings_button.configure(text="▶ Settings")
-            self.settings_expanded.set(False)
-        else:
-            # Show Settings options
-            self.settings_options_frame.pack(fill="x", padx=10, pady=(5, 0))
-            self.expand_settings_button.configure(text="▼ Settings")
-            self.settings_expanded.set(True)
-
-        # Update scrollbar visibility after layout change
-        self.root.after(100, self._manage_scrollbar_visibility)
+        """Switch to the Settings tab (sections are tabs now)"""
+        self.config_tabview.set("Settings")
 
     def load_image(self, url, width=100, height=150):
         """Load and display image using CTkImage for proper scaling"""
@@ -1137,6 +1252,7 @@ class DragDropGUI:
             'gemini_api_key': self.gemini_api_key.get() if hasattr(self, 'gemini_api_key') else '',
             'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
             'model': self.model.get() if hasattr(self, 'model') else 'gemini-3-flash',
+            'fallback_models': self.fallback_models.get() if hasattr(self, 'fallback_models') else '',
             'tmdb_api_key': self.tmdb_api_key.get() if hasattr(self, 'tmdb_api_key') else '',
             'tmdb_id': self.tmdb_id.get() if hasattr(self, 'tmdb_id') else '',
             'api_expanded': self.api_expanded.get() if hasattr(self, 'api_expanded') else False,
@@ -1330,12 +1446,15 @@ class DragDropGUI:
                              tags=('video_only',))
         else:
             # Other file type
-            self.tree.insert('', 'end', text='☑️ Single file',
-                             values=(file_path.name if file_type == 'text' else "N/A",
-                                     file_path.name if file_type == 'video' else "N/A",
-                                     title, year_display, str(self.current_folder_path),
-                                     f"📄 {file_type.title()}"),
-                             tags=('no_match',))
+            item_id = self.tree.insert('', 'end', text='☑️ Single file',
+                                       values=(file_path.name if file_type == 'text' else "N/A",
+                                               file_path.name if file_type == 'video' else "N/A",
+                                               title, year_display, str(self.current_folder_path),
+                                               f"📄 {file_type.title()}"),
+                                       tags=('no_match',))
+
+            if file_type == 'video':
+                self._auto_probe_embedded([(item_id, str(file_path))])
 
         # Check for transcription.txt in the file's folder
         self._load_transcription_if_exists(self.current_folder_path)
@@ -1430,10 +1549,12 @@ class DragDropGUI:
             self.tree.delete(item)
 
         # Clear TMDB fields when starting fresh with new content
-        if hasattr(self, 'overview'):
+        if hasattr(self, 'overview_textbox'):
             self._clear_overview_field()
         if hasattr(self, 'tmdb_id'):
             self.tmdb_id.set('')  # Clear TMDB ID for new movie
+
+        self._update_selected_count()
 
     def toggle_checkbox(self, event):
         """Toggle checkbox state on double-click"""
@@ -1487,6 +1608,351 @@ class DragDropGUI:
             # Add checkbox - ensure proper spacing
             new_text = '☑️ ' + current_text
             self.tree.item(item, text=new_text)
+
+        self._update_selected_count()
+
+    def select_all_items(self):
+        """Check all items in the tree"""
+        for item in self.tree.get_children():
+            if self.tree.item(item, 'text').startswith('☐'):
+                self.toggle_item_checkbox(item)
+        self._update_selected_count()
+
+    def deselect_all_items(self):
+        """Uncheck all items in the tree"""
+        for item in self.tree.get_children():
+            if self.tree.item(item, 'text').startswith('☑️'):
+                self.toggle_item_checkbox(item)
+        self._update_selected_count()
+
+    def _update_selected_count(self):
+        """Update the 'N of M selected' label above the tree"""
+        if not hasattr(self, 'selected_count_label'):
+            return
+        items = self.tree.get_children()
+        total = len(items)
+        selected = sum(1 for i in items if self.tree.item(i, 'text').startswith('☑️'))
+        self.selected_count_label.configure(
+            text=f"{selected} of {total} selected" if total else ""
+        )
+
+    # ---------- Embedded subtitle tracks ----------
+
+    def _video_path_for_item(self, item):
+        """Full video path for a tree row, or None"""
+        values = self.tree.item(item, 'values')
+        if len(values) < 5 or not values[1] or values[1] in ('None', 'N/A'):
+            return None
+        return str(Path(values[4]) / values[1])
+
+    def _probe_tracks_cached(self, video_path):
+        """Probe subtitle tracks with caching (worker thread safe)"""
+        if video_path not in self._embedded_tracks_cache:
+            self._embedded_tracks_cache[video_path] = probe_subtitle_tracks(video_path)
+        return self._embedded_tracks_cache[video_path]
+
+    def choose_embedded_subtitles(self):
+        """Detect embedded subtitle tracks in selected videos and let the user pick one"""
+        items = [
+            item for item in self.tree.get_children()
+            if self.tree.item(item, 'text').startswith('☑️') and self._video_path_for_item(item)
+        ]
+        if not items:
+            messagebox.showinfo("Embedded subtitles",
+                                "No selected rows with a video file.\n"
+                                "Select rows containing a video (e.g. MKV) first.")
+            return
+
+        first_video = self._video_path_for_item(items[0])
+        self.status_var.set("Scanning embedded subtitle tracks...")
+        self.embedded_subs_button.configure(state="disabled")
+        self.log_to_console(f"🎞 Scanning subtitle tracks in: {Path(first_video).name}")
+
+        def probe():
+            tracks = self._probe_tracks_cached(first_video)
+
+            def show():
+                self.embedded_subs_button.configure(state="normal")
+                self.status_var.set("Ready")
+                if not tracks:
+                    self.log_to_console("🎞 No embedded subtitle tracks found")
+                    messagebox.showinfo("Embedded subtitles",
+                                        f"No embedded subtitle tracks found in:\n{Path(first_video).name}")
+                    return
+                self._show_track_dialog(tracks, items, first_video)
+
+            self.root.after(0, show)
+
+        threading.Thread(target=probe, daemon=True).start()
+
+    def _show_track_dialog(self, tracks, items, first_video):
+        """Dialog with a radio list of subtitle tracks found in the first selected video"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Choose embedded subtitle track")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry(f"+{self.root.winfo_rootx() + 300}+{self.root.winfo_rooty() + 200}")
+
+        header = f"Subtitle tracks in {Path(first_video).name}"
+        if len(items) > 1:
+            header += f"\n(applied to all {len(items)} selected videos, matched by language)"
+        ctk.CTkLabel(dialog, text=header, font=ctk.CTkFont(size=13, weight="bold"),
+                     justify="left").pack(anchor="w", padx=20, pady=(15, 10))
+
+        # Preselect: default text track, else first text track
+        text_tracks = [t for t in tracks if t['text_based']]
+        preselected = next((t for t in text_tracks if t['default']), text_tracks[0] if text_tracks else None)
+        choice = tk.IntVar(value=preselected['type_index'] if preselected else -1)
+
+        for track in tracks:
+            rb = ctk.CTkRadioButton(
+                dialog,
+                text=format_track_label(track),
+                variable=choice,
+                value=track['type_index'],
+                state="normal" if track['text_based'] else "disabled"
+            )
+            rb.pack(anchor="w", padx=25, pady=4)
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill="x", padx=20, pady=(15, 15))
+
+        def on_extract():
+            selected = next((t for t in tracks if t['type_index'] == choice.get()), None)
+            dialog.destroy()
+            if selected:
+                self._extract_tracks_for_items(items, selected)
+
+        ctk.CTkButton(buttons, text="Extract && use", command=on_extract,
+                      fg_color=("green", "darkgreen")).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray30", "gray70")).pack(side="left")
+
+        if not text_tracks:
+            ctk.CTkLabel(dialog, text="⚠️ Only bitmap tracks found - they cannot be converted to SRT",
+                         text_color="orange").pack(padx=20, pady=(0, 10))
+
+    def _extract_tracks_for_items(self, items, wanted_track):
+        """Extract the chosen track from every selected video (background thread)"""
+        self.status_var.set("Extracting embedded subtitles...")
+        self.embedded_subs_button.configure(state="disabled")
+
+        def worker():
+            ok_count = 0
+            for item in items:
+                video_path = self._video_path_for_item(item)
+                if not video_path:
+                    continue
+
+                tracks = self._probe_tracks_cached(video_path)
+                track = pick_matching_track(tracks, wanted_track)
+                if not track:
+                    self.log_to_console(f"⚠️ No matching text subtitle track in: {Path(video_path).name}")
+                    continue
+
+                lang = track['language'] or f"track{track['type_index'] + 1}"
+                stem = Path(video_path).stem
+                output = str(Path(video_path).parent / f"{stem}_extracted_{lang}.srt")
+                result = extract_subtitle_track(video_path, track['type_index'], output)
+
+                if result:
+                    ok_count += 1
+                    self.log_to_console(
+                        f"🎞 Extracted '{format_track_label(track)}' → {Path(result).name}")
+
+                    def update_row(item=item, srt_name=Path(result).name):
+                        if not self.tree.exists(item):
+                            return
+                        values = list(self.tree.item(item, 'values'))
+                        values[0] = srt_name
+                        values[5] = "✅ Matched"
+                        self.tree.item(item, values=values, tags=('matched',))
+                    self.root.after(0, update_row)
+                else:
+                    self.log_to_console(f"❌ Extraction failed for: {Path(video_path).name}")
+
+            def finish():
+                self.embedded_subs_button.configure(state="normal")
+                self.status_var.set(f"Extracted subtitles from {ok_count}/{len(items)} videos")
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _auto_probe_embedded(self, video_items):
+        """Background: check videos without subtitles for embedded tracks, update status"""
+        def worker():
+            found_any = False
+            for item, video_path in video_items:
+                tracks = self._probe_tracks_cached(video_path)
+                text_count = sum(1 for t in tracks if t['text_based'])
+                if not text_count:
+                    continue
+                found_any = True
+
+                def update_row(item=item, count=text_count):
+                    if not self.tree.exists(item):
+                        return
+                    values = list(self.tree.item(item, 'values'))
+                    # Only annotate rows that still have no subtitle file
+                    if values[0] in ('', 'None', 'N/A'):
+                        values[5] = f"🎞 {count} embedded subs"
+                        self.tree.item(item, values=values)
+                self.root.after(0, update_row)
+
+            if found_any:
+                self.root.after(0, lambda: self.log_to_console(
+                    "🎞 Embedded subtitle tracks detected - select rows and click "
+                    "'🎞 Embedded subs' to choose which one to translate"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ---------- Video description / transcription (gst_transcribe) ----------
+
+    def describe_video(self):
+        """Analyze the selected video with Gemini and load the result into Overview"""
+        if self.translation_manager.is_running():
+            messagebox.showinfo("Describe video", "Wait for the current translation to finish first.")
+            return
+
+        api_key = self.gemini_api_key.get().strip()
+        if not api_key:
+            messagebox.showwarning("API Key Required", "Enter your Gemini API key first (API keys tab).")
+            return
+
+        items = [
+            item for item in self.tree.get_children()
+            if self.tree.item(item, 'text').startswith('☑️') and self._video_path_for_item(item)
+        ]
+        if not items:
+            messagebox.showinfo("Describe video",
+                                "No selected rows with a video file.\n"
+                                "Select a row containing a video first.")
+            return
+
+        video_path = self._video_path_for_item(items[0])
+        if not os.path.exists(video_path):
+            messagebox.showerror("Describe video", f"Video file not found:\n{video_path}")
+            return
+
+        self._show_describe_dialog(video_path, extra_count=len(items) - 1)
+
+    def _show_describe_dialog(self, video_path, extra_count=0):
+        """Options dialog before running the video description"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Describe video")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry(f"+{self.root.winfo_rootx() + 300}+{self.root.winfo_rooty() + 200}")
+
+        header = f"Analyze: {Path(video_path).name}"
+        if extra_count > 0:
+            header += f"\n(only this first video; {extra_count} other selected will be ignored)"
+        ctk.CTkLabel(dialog, text=header, font=ctk.CTkFont(size=13, weight="bold"),
+                     justify="left").pack(anchor="w", padx=20, pady=(15, 10))
+
+        ctk.CTkLabel(
+            dialog,
+            text="Uploads the video to Gemini and generates a description + transcription,\n"
+                 "then loads it into Overview (used as translation context).\n"
+                 "The result is also saved as transcription.txt next to the video.",
+            justify="left", text_color="gray", font=ctk.CTkFont(size=11)
+        ).pack(anchor="w", padx=20, pady=(0, 10))
+
+        preprocess_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            dialog, text="Preprocess (2x speed + 360p) — much faster upload/analysis",
+            variable=preprocess_var
+        ).pack(anchor="w", padx=25, pady=(0, 10))
+
+        seg_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        seg_row.pack(anchor="w", fill="x", padx=25, pady=(0, 5))
+        ctk.CTkLabel(seg_row, text="Split long videos every (min):").pack(side="left")
+        seg_var = tk.StringVar(value="30")
+        ctk.CTkEntry(seg_row, textvariable=seg_var, width=60).pack(side="left", padx=(8, 0))
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill="x", padx=20, pady=(15, 15))
+
+        def on_start():
+            try:
+                seg_minutes = int(seg_var.get().strip() or "30")
+                if seg_minutes <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning("Describe video", "Segment length must be a positive number of minutes.")
+                return
+            dialog.destroy()
+            self._run_describe(
+                video_path,
+                preprocess=preprocess_var.get(),
+                segment_duration=seg_minutes * 60,
+                lang=self.language.get().strip() or "Polish",
+            )
+
+        ctk.CTkButton(buttons, text="Start", command=on_start,
+                      fg_color=("green", "darkgreen")).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray30", "gray70")).pack(side="left")
+
+    def _run_describe(self, video_path, preprocess, segment_duration, lang):
+        """Run video analysis in a background thread, streaming progress to the console"""
+        api_key = self.gemini_api_key.get().strip()
+        self.status_var.set("Describing video... (this can take a while)")
+        self.describe_video_button.configure(state="disabled")
+        self.log_to_console("─" * 40)
+        self.log_to_console(f"📝 Describing video: {Path(video_path).name}")
+        self.log_to_console(f"   Preprocess: {preprocess} | Segment: {segment_duration // 60} min | Lang: {lang}")
+
+        def worker():
+            redirect = _ConsoleStdout(self.log_to_console)
+            error = None
+            try:
+                import contextlib
+                with contextlib.redirect_stdout(redirect):
+                    result = vdesc.analyze_video(
+                        video_path,
+                        api_key,
+                        segment_duration=segment_duration,
+                        preprocess=preprocess,
+                        lang=lang,
+                    )
+                redirect.flush()
+
+                analysis = result.get("analysis", "").strip()
+
+                # Save transcription.txt next to the video (same as the CLI does)
+                out_file = Path(video_path).parent / "transcription.txt"
+                try:
+                    with open(out_file, "w", encoding="utf-8") as f:
+                        f.write(f"VIDEO ANALYSIS: {result['file_name']}\n")
+                        f.write(f"Model: {result['model']}\n")
+                        f.write(f"Language: {result['lang']}\n")
+                        if result.get('segments', 1) > 1:
+                            f.write(f"Processed in {result['segments']} parts\n")
+                        f.write("=" * 60 + "\n\n")
+                        f.write(analysis)
+                except Exception as e:
+                    self.root.after(0, lambda e=e: self.log_to_console(f"⚠️ Could not write transcription.txt: {e}"))
+            except Exception as e:
+                error = e
+                redirect.flush()
+
+            def finish():
+                self.describe_video_button.configure(state="normal")
+                if error:
+                    self.status_var.set("Video description failed")
+                    self.log_to_console(f"❌ Video description failed: {error}")
+                    messagebox.showerror("Describe video", f"Analysis failed:\n{error}")
+                    return
+                self._update_overview_field(analysis)
+                self.config_tabview.set("Settings")
+                self.status_var.set("Video description done - loaded into Overview")
+                self.log_to_console(f"✅ Description loaded into Overview and saved to transcription.txt")
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _determine_tag_from_status(self, status):
         """Determine TreeView tag based on status"""
@@ -1573,6 +2039,7 @@ class DragDropGUI:
         matches = self.find_video_matches(subtitle_files, video_files, folder_path)
 
         # Add matches to TreeView
+        videos_to_probe = []
         for i, match in enumerate(matches):
             subtitle_name = match['subtitle'].name if match['subtitle'] else "None"
             video_name = match['video'].name if match['video'] else "None"
@@ -1589,12 +2056,22 @@ class DragDropGUI:
 
             item_text = f"☑️ Pair {i + 1}"
 
-            self.tree.insert('', 'end', text=item_text,
-                             values=(subtitle_name, video_name, title, year_display, str(folder_path), match['status']),
-                             tags=(match['tag'],))
+            item_id = self.tree.insert('', 'end', text=item_text,
+                                       values=(subtitle_name, video_name, title, year_display, str(folder_path),
+                                               match['status']),
+                                       tags=(match['tag'],))
+
+            # Videos without a matched subtitle: check for embedded tracks in background
+            # (scan returns paths relative to the folder, so join with folder_path)
+            if match['video'] and not match['subtitle']:
+                videos_to_probe.append((item_id, str(Path(folder_path) / match['video'])))
 
         # Log summary
         self._log_matching_summary(matches)
+        self._update_selected_count()
+
+        if videos_to_probe:
+            self._auto_probe_embedded(videos_to_probe)
 
     def _log_matching_summary(self, matches):
         """Log matching summary"""
@@ -1895,9 +2372,9 @@ class DragDropGUI:
                 self.overview_textbox.insert("1.0", overview_text)
 
     def _clear_overview_field(self):
-        """Clear the overview entry field"""
-        if hasattr(self, 'overview'):
-            self.overview.set('')
+        """Clear the overview textbox field"""
+        if hasattr(self, 'overview_textbox'):
+            self.overview_textbox.delete("1.0", "end")
 
     def _update_tmdb_id_field(self, movie, silent=False):
         """Update TMDB ID field with found movie (runs in main thread)"""
@@ -1955,6 +2432,15 @@ class DragDropGUI:
             if not self._log_scheduled:
                 self._log_scheduled = True
                 self.root.after(50, self._flush_log_buffer)  # 50ms throttle
+
+    def clear_console(self):
+        """Clear all console output"""
+        if hasattr(self, 'console_text'):
+            try:
+                self.console_text.configure(state='normal')
+                self.console_text.delete('1.0', 'end')
+            except Exception:
+                pass
 
     def _flush_log_buffer(self):
         """Flush log buffer to console (runs in main thread)"""
