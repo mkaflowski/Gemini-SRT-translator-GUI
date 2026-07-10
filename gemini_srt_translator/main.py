@@ -3,6 +3,7 @@ import os
 import re
 import signal
 import stat
+import sys
 import tempfile
 import time
 import typing
@@ -355,6 +356,26 @@ class GeminiSRTTranslator:
         except Exception as e:
             warning(f"Error reading progress file: {e}")
 
+    def _detect_resume_line(self, original_subtitle, translated_subtitle) -> int:
+        """
+        Determine where to resume when an output file exists but no matching
+        progress file is available (e.g. after switching to a fallback model).
+
+        Scans the existing translation and returns the 1-based line right after
+        the last line that already differs from the original (i.e. was already
+        translated). Falls back to line 1 if nothing looks translated.
+        """
+        last_translated = 0
+        for idx in range(len(original_subtitle)):
+            if idx < len(translated_subtitle) and translated_subtitle[idx].content != original_subtitle[idx].content:
+                last_translated = idx + 1
+        start_line = last_translated + 1
+        if start_line < 1:
+            start_line = 1
+        if start_line > len(original_subtitle):
+            start_line = len(original_subtitle)
+        return start_line
+
     def _save_progress(self, line):
         """Save current progress to temporary file"""
         if not self.progress_file:
@@ -616,23 +637,35 @@ class GeminiSRTTranslator:
                 else:
                     info(f"Translated file {self.output_file} already exists. Loading existing translation...\n")
                 if self.start_line == None:
-                    while True:
-                        try:
-                            self.start_line = int(
-                                input_prompt(
-                                    f"Enter the line number to start from (1 to {len(original_subtitle)}): ",
-                                    mode="line",
-                                    max_length=len(original_subtitle),
-                                ).strip()
-                            )
-                            if self.start_line < 1 or self.start_line > len(original_subtitle):
-                                warning(
-                                    f"Line number must be between 1 and {len(original_subtitle)}. Please try again."
+                    # When there's no matching progress file we don't know where to
+                    # resume. Prompting only works with an interactive terminal, so
+                    # from a GUI subprocess (no TTY) or when --resume was requested we
+                    # auto-detect the resume point from the existing translation
+                    # instead of blocking forever on input().
+                    if self.resume is not False and (self.resume is True or not sys.stdin or not sys.stdin.isatty()):
+                        self.start_line = self._detect_resume_line(original_subtitle, translated_subtitle)
+                        if self.use_colors:
+                            info(f"Resuming from line \033[31m{self.start_line}")
+                        else:
+                            info(f"Resuming from line {self.start_line}")
+                    else:
+                        while True:
+                            try:
+                                self.start_line = int(
+                                    input_prompt(
+                                        f"Enter the line number to start from (1 to {len(original_subtitle)}): ",
+                                        mode="line",
+                                        max_length=len(original_subtitle),
+                                    ).strip()
                                 )
-                                continue
-                            break
-                        except ValueError:
-                            warning("Invalid input. Please enter a valid number.")
+                                if self.start_line < 1 or self.start_line > len(original_subtitle):
+                                    warning(
+                                        f"Line number must be between 1 and {len(original_subtitle)}. Please try again."
+                                    )
+                                    continue
+                                break
+                            except ValueError:
+                                warning("Invalid input. Please enter a valid number.")
 
             except FileNotFoundError:
                 translated_subtitle = original_subtitle.copy()
