@@ -14,7 +14,6 @@ TEXT_CODECS = {'subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text', 'mpl
 # Hide console windows spawned by ffmpeg/ffprobe on Windows
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
 
-
 def probe_subtitle_tracks(video_path):
     """
     List subtitle streams embedded in a video file.
