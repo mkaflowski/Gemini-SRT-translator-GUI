@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gst_gui"
-version = "0.18"
+version = "0.19"
 description = "Gemini SRT Translator GUI"
 authors = [{ name = "Mateusz Kaflowski" }]
 readme = "README.md"
@@ -12,10 +12,10 @@ requires-python = ">=3.8"
 dependencies = [
     "google-genai>=1.56.0",
     "customtkinter>=5.2.2",
-    "gemini-srt-translator>=2.1.2",
     "Pillow>=9.0.0",
     "requests>=2.25.0",
     "srt>=3.5.0",
+    "json-repair>=0.61.0",
     "tkinterdnd2>=0.3.0"
 ]
 
@@ -27,7 +27,8 @@ gst_transcribe = "gst_gui.utils.video_description_with_splitting:main"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["gst_gui*"]
+include = ["gst_gui*", "gemini_srt_translator*"]
 
 [tool.setuptools.package-data]
 "gst_gui.assets" = ["*.png"]
+"gemini_srt_translator" = ["*.json"]
