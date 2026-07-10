@@ -902,10 +902,17 @@ class GeminiSRTTranslator:
                     elif any(err in e_str for err in ["429", "500", "503", "unavailable", "overloaded"]):
                         server_overload_retries += 1
                         if server_overload_retries <= max_overload_retries:
-                            warning_with_progress(
-                                f"Model is overloaded. Attempt {server_overload_retries}/{max_overload_retries}. Pausing for 60 seconds..."
-                            )
-                            time.sleep(60)
+                            if self._switch_api():
+                                warning_with_progress(
+                                    f"Model is overloaded. Attempt {server_overload_retries}/{max_overload_retries}. "
+                                    f"Switching to API {self.current_api_number} and pausing for 30 seconds..."
+                                )
+                                time.sleep(30)
+                            else:
+                                warning_with_progress(
+                                    f"Model is overloaded. Attempt {server_overload_retries}/{max_overload_retries}. Pausing for 60 seconds..."
+                                )
+                                time.sleep(60)
                             info_with_progress("Resuming translation...", isSending=True)
                             continue
                         else:
@@ -1858,11 +1865,19 @@ class GeminiSRTTranslator:
                         elif any(err in e_str for err in ["429", "500", "503", "unavailable", "overloaded"]):
                             server_error_retries += 1
                             if server_error_retries < max_retries:
-                                warning_with_progress(
-                                    f"Model is overloaded. Attempt {server_error_retries + 1}/{max_retries}. Pausing for 60 seconds...",
-                                    isTranscribing=True,
-                                )
-                                time.sleep(60)
+                                if self._switch_api():
+                                    warning_with_progress(
+                                        f"Model is overloaded. Attempt {server_error_retries + 1}/{max_retries}. "
+                                        f"Switching to API {self.current_api_number} and pausing for 30 seconds...",
+                                        isTranscribing=True,
+                                    )
+                                    time.sleep(30)
+                                else:
+                                    warning_with_progress(
+                                        f"Model is overloaded. Attempt {server_error_retries + 1}/{max_retries}. Pausing for 60 seconds...",
+                                        isTranscribing=True,
+                                    )
+                                    time.sleep(60)
                                 continue
                             else:
                                 error_with_progress(
