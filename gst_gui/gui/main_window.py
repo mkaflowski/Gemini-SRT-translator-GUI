@@ -139,7 +139,8 @@ class DragDropGUI:
         self.cli_runner = CLIRunner(
             logger=self.log_to_console,
             progress_callback=self._on_translation_progress,
-            pair_status_callback=self._on_pair_status
+            pair_status_callback=self._on_pair_status,
+            line_progress_callback=self._on_line_progress
         )
 
         # Store current folder path for building full file paths
@@ -1022,6 +1023,25 @@ class DragDropGUI:
                 self.progress_bar.set(completed / total)
                 if 0 < completed < total:
                     self.status_var.set(f"Translating... {completed}/{total} done")
+        self.root.after(0, update)
+
+    def _on_line_progress(self, pair_index, total_pairs, current_line, total_lines):
+        """Within-file line progress from CLIRunner (worker thread - marshal to UI thread).
+
+        Combines completed pairs with the current file's line fraction so the
+        bar advances smoothly across a multi-file batch without jumping back.
+        """
+        def update():
+            if total_lines <= 0 or total_pairs <= 0:
+                return
+            file_fraction = current_line / total_lines
+            overall = ((pair_index - 1) + file_fraction) / total_pairs
+            overall = max(0.0, min(1.0, overall))
+            self.progress_bar.set(overall)
+            self.status_var.set(
+                f"Translating... {current_line}/{total_lines} lines"
+                + (f" (file {pair_index}/{total_pairs})" if total_pairs > 1 else "")
+            )
         self.root.after(0, update)
 
     def _on_pair_status(self, pair, status):

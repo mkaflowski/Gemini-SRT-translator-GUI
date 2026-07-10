@@ -5,6 +5,7 @@ Handles process management and output streaming.
 import datetime
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -13,17 +14,30 @@ from pathlib import Path
 
 import srt
 
+# Matches ANSI/VT100 control sequences (cursor moves, line clears, colors)
+# that the CLI progress bar emits to redraw itself in place. In the GUI these
+# would otherwise show up as literal "[F[K" garbage.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# Matches the translation progress readout, e.g. "66% (430/650)".
+_PROGRESS_RE = re.compile(r"(\d+)%\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)")
+
 
 class CLIRunner:
     """Handles execution of CLI commands with real-time output"""
 
-    def __init__(self, logger=None, progress_callback=None, pair_status_callback=None):
+    def __init__(self, logger=None, progress_callback=None, pair_status_callback=None,
+                 line_progress_callback=None):
         self.logger = logger
         # progress_callback(completed, total) - overall batch progress
         self.progress_callback = progress_callback
         # pair_status_callback(pair, status) - status is one of:
         # 'translating', 'done', 'failed', 'cancelled'
         self.pair_status_callback = pair_status_callback
+        # line_progress_callback(pair_index, total_pairs, current_line, total_lines)
+        # - within-file translation progress parsed from the CLI progress bar.
+        self.line_progress_callback = line_progress_callback
+        # Number of file pairs in the current batch (for combined progress).
+        self._batch_total = 1
         # Root that must be on PYTHONPATH so `-m gemini_srt_translator`
         # resolves to the vendored copy shipped inside this repo.
         self.gst_root = None
@@ -34,6 +48,14 @@ class CLIRunner:
         if self.progress_callback:
             try:
                 self.progress_callback(completed, total)
+            except Exception:
+                pass
+
+    def _notify_line_progress(self, pair_index, current, total):
+        """Report within-file line progress (safe to call from worker thread)"""
+        if self.line_progress_callback and total > 0:
+            try:
+                self.line_progress_callback(pair_index, self._batch_total, current, total)
             except Exception:
                 pass
 
@@ -120,6 +142,7 @@ class CLIRunner:
 
         success_count = 0
         total_count = len(file_pairs)
+        self._batch_total = total_count if total_count > 0 else 1
         cancel_event = config.get('cancel_event')
 
         self._notify_progress(0, total_count)
@@ -588,6 +611,8 @@ class CLIRunner:
             reader_thread = threading.Thread(target=_reader, daemon=True)
             reader_thread.start()
 
+            last_progress_key = None
+
             while True:
                 # Check for cancellation first (responsive even during API waits)
                 if cancel_event and cancel_event.is_set():
@@ -610,9 +635,26 @@ class CLIRunner:
                 if line is None:  # sentinel - stdout closed
                     break
 
-                output_line = line.rstrip()
-                if output_line:
-                    self.log(f"   {output_line}")
+                # Strip the ANSI cursor/color sequences the CLI progress bar
+                # emits so they don't show up as "[F[K" junk in the GUI log.
+                clean_line = _ANSI_RE.sub("", line).replace("\r", "")
+                output_line = clean_line.rstrip()
+                if not output_line:
+                    continue
+
+                match = _PROGRESS_RE.search(output_line)
+                if match:
+                    current = int(match.group(2))
+                    total = int(match.group(3))
+                    self._notify_line_progress(pair_number, current, total)
+                    # Collapse repeated redraws (spinner animation reuses the
+                    # same line count) so the log isn't flooded.
+                    progress_key = (current, total)
+                    if progress_key == last_progress_key:
+                        continue
+                    last_progress_key = progress_key
+
+                self.log(f"   {output_line}")
 
             # Wait for completion (with timeout for cancellation)
             try:
