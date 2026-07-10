@@ -26,5 +26,8 @@ gst_transcribe = "gst_gui.utils.video_description_with_splitting:main"
 [tool.setuptools]
 include-package-data = true
 
+[tool.setuptools.packages.find]
+include = ["gst_gui*"]
+
 [tool.setuptools.package-data]
 "gst_gui.assets" = ["*.png"]
