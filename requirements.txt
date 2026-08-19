@@ -1,6 +1,9 @@
-gemini-srt-translator>=2.1.2
+# gemini_srt_translator jest wendorowany w tym repo - nie instalujemy go z PyPI,
+# bo jego pin (google-genai==1.19.0) cofa SDK do wersji bez thinking_level
+google-genai>=1.56.0
+customtkinter>=5.2.2
 Pillow>=9.0.0
 requests>=2.25.0
 srt>=3.5.0
+json-repair>=0.61.0
 tkinterdnd2>=0.3.0
-customtkinter>=5.2.2
