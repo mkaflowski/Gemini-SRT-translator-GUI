@@ -52,6 +52,7 @@ from gst_gui.utils.subtitle_tracks import (
     extract_subtitle_track,
 )
 from gst_gui.utils import video_description_with_splitting as vdesc
+from gst_gui.utils import srt_merge
 
 
 class _ConsoleStdout:
@@ -313,6 +314,13 @@ class DragDropGUI:
             fg_color="transparent", border_width=1, text_color=("gray30", "gray70")
         )
         self.embedded_subs_button.pack(side="right", padx=(0, 10))
+
+        self.merge_subs_button = ctk.CTkButton(
+            tree_header, text="🔀 Merge subs", command=self.merge_subtitles,
+            width=120, height=24, font=ctk.CTkFont(size=11),
+            fg_color="transparent", border_width=1, text_color=("gray30", "gray70")
+        )
+        self.merge_subs_button.pack(side="right", padx=(0, 10))
 
         self.describe_video_button = ctk.CTkButton(
             tree_header, text="📝 Describe video", command=self.describe_video,
@@ -1077,6 +1085,7 @@ class DragDropGUI:
                                    "No pairs selected for translation.")
             return
 
+        self._sync_merge_context()
         config = self._get_current_config()
         self.translation_manager.start_translation(selected_pairs, config)
 
@@ -1655,6 +1664,7 @@ class DragDropGUI:
         self.selected_count_label.configure(
             text=f"{selected} of {total} selected" if total else ""
         )
+        self._sync_merge_context()
 
     # ---------- Embedded subtitle tracks ----------
 
@@ -1826,6 +1836,290 @@ class DragDropGUI:
                     "'🎞 Embedded subs' to choose which one to translate"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ---------- Merging two subtitle files into a bilingual one ----------
+
+    def _subtitle_path_for_item(self, item):
+        """Full subtitle path for a tree row, or None"""
+        values = self.tree.item(item, 'values')
+        if len(values) < 5 or not values[0] or values[0] in ('None', 'N/A'):
+            return None
+        return str(Path(values[4]) / values[0])
+
+    def merge_subtitles(self):
+        """Merge the selected subtitles with a second-language file used as reference"""
+        items = [
+            item for item in self.tree.get_children()
+            if self.tree.item(item, 'text').startswith('☑️') and self._subtitle_path_for_item(item)
+        ]
+        if not items:
+            messagebox.showinfo("Merge subtitles",
+                                "No selected rows with a subtitle file.\n\n"
+                                "Select one row (main subtitles - the reference file is "
+                                "looked up in the same folder) or two rows "
+                                "(main + reference).")
+            return
+        if len(items) > 2:
+            messagebox.showinfo("Merge subtitles",
+                                f"{len(items)} rows selected.\n\n"
+                                "Merging works on one pair - select one or two rows.")
+            return
+
+        base_path = self._subtitle_path_for_item(items[0])
+        ref_item = items[1] if len(items) == 2 else None
+        if ref_item is not None:
+            ref_path = self._subtitle_path_for_item(ref_item)
+        else:
+            candidates = srt_merge.find_reference_candidates(base_path)
+            ref_path = candidates[0] if candidates else ""
+
+        self._show_merge_dialog(items[0], base_path, ref_path, ref_item)
+
+    def _show_merge_dialog(self, base_item, base_path, ref_path, ref_item=None):
+        """Dialog: pick the reference subtitles and the merge options"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Merge subtitles")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry(f"+{self.root.winfo_rootx() + 250}+{self.root.winfo_rooty() + 150}")
+
+        ctk.CTkLabel(dialog,
+                     text="Merge two subtitle files into one",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=20, pady=(15, 2))
+        ctk.CTkLabel(dialog,
+                     text="The main subtitles stay as they are; lines from the reference file are\n"
+                          "added below them as {lang: ...} context, and moments missing from the\n"
+                          "main file are inserted as extra subtitles.",
+                     justify="left", text_color=("gray30", "gray70"),
+                     font=ctk.CTkFont(size=11)).pack(anchor="w", padx=20, pady=(0, 12))
+
+        # --- main file ---
+        ctk.CTkLabel(dialog, text=f"📝 Main:  {Path(base_path).name}",
+                     font=ctk.CTkFont(size=12)).pack(anchor="w", padx=20)
+
+        # --- reference file ---
+        ref_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        ref_row.pack(fill="x", padx=20, pady=(8, 0))
+        ctk.CTkLabel(ref_row, text="🌍 Reference:").pack(side="left", padx=(0, 8))
+        ref_var = tk.StringVar(value=ref_path or "")
+        ref_entry = ctk.CTkEntry(ref_row, textvariable=ref_var, width=330,
+                                 placeholder_text="pick the second subtitle file...")
+        ref_entry.pack(side="left", padx=(0, 8))
+
+        # --- language tags ---
+        lang_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        lang_row.pack(fill="x", padx=20, pady=(10, 0))
+        ctk.CTkLabel(lang_row, text="Language tags:").pack(side="left", padx=(0, 8))
+        base_lang = tk.StringVar(value=srt_merge.guess_lang_tag(base_path, "en"))
+        other_lang = tk.StringVar(value=srt_merge.guess_lang_tag(ref_path, "fr") if ref_path else "fr")
+        ctk.CTkEntry(lang_row, textvariable=base_lang, width=50).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(lang_row, text="(main)").pack(side="left", padx=(0, 12))
+        ctk.CTkEntry(lang_row, textvariable=other_lang, width=50).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(lang_row, text="(reference)").pack(side="left")
+
+        def browse_ref():
+            from tkinter import filedialog
+            path = filedialog.askopenfilename(
+                title="Choose the reference subtitle file",
+                initialdir=str(Path(base_path).parent),
+                filetypes=[("Subtitle files", "*.srt"), ("All files", "*.*")]
+            )
+            if path:
+                ref_var.set(path)
+                other_lang.set(srt_merge.guess_lang_tag(path, other_lang.get()))
+            dialog.lift()
+            dialog.focus_force()
+
+        ctk.CTkButton(ref_row, text="Browse...", command=browse_ref, width=90,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray30", "gray70")).pack(side="left")
+
+        # --- options ---
+        clean_var = tk.BooleanVar(value=True)
+        sync_var = tk.BooleanVar(value=True)
+        opts = ctk.CTkFrame(dialog, fg_color="transparent")
+        opts.pack(fill="x", padx=20, pady=(12, 0))
+        ctk.CTkCheckBox(opts, text="Remove song lyrics (♪) and hearing-impaired text",
+                        variable=clean_var).pack(anchor="w", pady=2)
+        ctk.CTkCheckBox(opts, text="Auto-sync the reference file if it is off by more than 0.5 s",
+                        variable=sync_var).pack(anchor="w", pady=2)
+        ctk.CTkLabel(opts,
+                     text="The bilingual note is added to Overview automatically whenever a merged\n"
+                          "file (…en_fr.srt) is selected, and removed when it is not.",
+                     justify="left", text_color=("gray30", "gray70"),
+                     font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(6, 0))
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill="x", padx=20, pady=(15, 15))
+
+        def on_merge():
+            ref = ref_var.get().strip()
+            if not ref or not Path(ref).is_file():
+                messagebox.showwarning("Merge subtitles",
+                                       "Pick an existing reference subtitle file first.",
+                                       parent=dialog)
+                return
+            if Path(ref).resolve() == Path(base_path).resolve():
+                messagebox.showwarning("Merge subtitles",
+                                       "The reference file must be different from the main one.",
+                                       parent=dialog)
+                return
+            options = {
+                'lang_base': base_lang.get().strip() or 'en',
+                'lang_other': other_lang.get().strip() or 'xx',
+                'clean': clean_var.get(),
+                'sync': sync_var.get(),
+            }
+            dialog.destroy()
+            self._run_merge(base_item, base_path, ref, ref_item, options)
+
+        ctk.CTkButton(buttons, text="Merge && use", command=on_merge,
+                      fg_color=("green", "darkgreen")).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray30", "gray70")).pack(side="left")
+
+    def _run_merge(self, base_item, base_path, ref_path, ref_item, options):
+        """Run the merge in the background and point the row at the merged file"""
+        self.status_var.set("Merging subtitles...")
+        self.merge_subs_button.configure(state="disabled")
+        self.log_to_console(
+            f"🔀 Merging {Path(base_path).name} + {Path(ref_path).name} "
+            f"({options['lang_base']} + {options['lang_other']})")
+
+        def worker():
+            try:
+                out_path, stats = srt_merge.merge_srt(
+                    base_path,
+                    ref_path,
+                    lang_base=options['lang_base'],
+                    lang_other=options['lang_other'],
+                    clean_music=options['clean'],
+                    clean_sdh=options['clean'],
+                    auto_shift=options['sync'],
+                )
+            except Exception as exc:  # noqa: BLE001 - pokazujemy błąd użytkownikowi
+                def failed(error=str(exc)):
+                    self.merge_subs_button.configure(state="normal")
+                    self.status_var.set("Merge failed")
+                    self.log_to_console(f"❌ Merge failed: {error}")
+                    messagebox.showerror("Merge subtitles", f"Merging failed:\n{error}")
+                self.root.after(0, failed)
+                return
+
+            def finish():
+                self.merge_subs_button.configure(state="normal")
+                self.log_to_console(
+                    f"🔀 Merged → {Path(out_path).name}: "
+                    f"{stats['attached']} matched, {stats['missing']} added from "
+                    f"{options['lang_other']}, {stats['removed_cues']} song/SDH cues removed")
+                if stats['shift_applied']:
+                    self.log_to_console(
+                        f"🔀 Reference file shifted by {stats['shift_applied']:+d} ms to match timing")
+                elif abs(stats['offset_ms']) >= 500:
+                    self.log_to_console(
+                        f"🔀 Timing offset ~{stats['offset_ms']:+d} ms detected but left alone "
+                        f"(gain {stats['offset_gain']:.2f}x - too small to be worth shifting)")
+
+                self._apply_merge_to_tree(base_item, ref_item, out_path,
+                                          base_path, ref_path)
+
+                self._sync_merge_context()
+                self.status_var.set(f"Merged into {Path(out_path).name}")
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_merge_to_tree(self, base_item, ref_item, out_path, base_path, ref_path):
+        """Add the merged file as its own row and unselect the two source rows.
+
+        The source rows stay on the list - only the merged row is checked, so
+        nothing disappears and no file gets translated twice.
+        """
+        merged_item = None
+        if self.tree.exists(base_item):
+            values = list(self.tree.item(base_item, 'values'))
+            values[0] = Path(out_path).name
+            values[4] = str(Path(out_path).parent)
+            values[5] = "🔀 Merged"
+            merged_item = self.tree.insert(
+                '', self.tree.index(base_item) + 1,
+                text='☑️ Merged', values=values, tags=('matched',))
+
+        for item, name in ((base_item, Path(base_path).name),
+                           (ref_item, Path(ref_path).name)):
+            if item is None or not self.tree.exists(item):
+                continue
+            if self.tree.item(item, 'text').startswith('☑️'):
+                self.toggle_item_checkbox(item)
+                self.log_to_console(
+                    f"🔀 Unchecked {name} - its content is inside the merged file")
+
+        self._update_selected_count()
+        return merged_item
+
+    MERGE_NOTE_MARKER = "This subtitle file is bilingual."
+
+    def _strip_merge_note(self, text):
+        """Overview without the auto-added bilingual note"""
+        parts = [p for p in (text or "").split("\n\n")
+                 if not p.strip().startswith(self.MERGE_NOTE_MARKER)]
+        return "\n\n".join(parts).strip()
+
+    def _overview_user_text(self):
+        """What the user (or TMDB) actually put in Overview, without our note"""
+        if not hasattr(self, 'overview_textbox'):
+            return ""
+        return self._strip_merge_note(self.overview_textbox.get("1.0", "end-1c"))
+
+    def _merged_langs_in_selection(self):
+        """Language tags of the first selected merged file (Film.en_fr.srt), or None"""
+        if not hasattr(self, 'tree'):
+            return None
+        for item in self.tree.get_children():
+            if not self.tree.item(item, 'text').startswith('☑️'):
+                continue
+            values = self.tree.item(item, 'values')
+            langs = srt_merge.parse_merged_name(values[0] if values else "")
+            if langs:
+                return langs
+        return None
+
+    def _sync_merge_context(self):
+        """Keep the bilingual note in Overview in sync with the selected files.
+
+        The note is added whenever a selected subtitle file carries the merged
+        suffix (``.en_fr.srt``) and removed as soon as no such file is selected,
+        so a plain translation never gets bilingual instructions.
+        """
+        if not hasattr(self, 'overview_textbox'):
+            return
+        langs = self._merged_langs_in_selection()
+        current = self.overview_textbox.get("1.0", "end-1c")
+        user_text = self._strip_merge_note(current)
+
+        if langs:
+            note = srt_merge.gst_description(*langs)
+            wanted = f"{user_text}\n\n{note}".strip() if user_text else note
+        else:
+            wanted = user_text
+
+        if wanted == current.strip():
+            return
+        self.overview_textbox.delete("1.0", "end")
+        if wanted:
+            self.overview_textbox.insert("1.0", wanted)
+        if langs and self.MERGE_NOTE_MARKER not in current:
+            self.log_to_console(
+                f"🔀 Bilingual context ({langs[0]} + {langs[1]}) added to Overview "
+                "- it goes to the model together with the description")
+        elif not langs and self.MERGE_NOTE_MARKER in current:
+            self.log_to_console("🔀 Bilingual context removed from Overview (no merged file selected)")
+
+    def _add_merge_context_to_overview(self, lang_base=None, lang_other=None):
+        """Backwards-compatible entry point - selection decides what is added"""
+        self._sync_merge_context()
 
     # ---------- Video description / transcription (gst_transcribe) ----------
 
@@ -2278,8 +2572,7 @@ class DragDropGUI:
             # Update only the overview field (keep existing TMDB ID)
             # BUT only if overview is currently empty (preserve transcription.txt)
             overview = movie.get('overview', '')
-            current_overview = self.overview_textbox.get("1.0", "end-1c").strip() if hasattr(self,
-                                                                                             'overview_textbox') else ""
+            current_overview = self._overview_user_text()
 
             if not current_overview and overview:
                 self._update_overview_field(overview)
@@ -2385,11 +2678,12 @@ class DragDropGUI:
         return ""
 
     def _update_overview_field(self, overview_text):
-        """Update the overview textbox field"""
+        """Update the overview textbox field (keeps the bilingual note attached)"""
         if hasattr(self, 'overview_textbox'):
             self.overview_textbox.delete("1.0", "end")
             if overview_text:
                 self.overview_textbox.insert("1.0", overview_text)
+            self._sync_merge_context()
 
     def _clear_overview_field(self):
         """Clear the overview textbox field"""
@@ -2406,8 +2700,7 @@ class DragDropGUI:
             # Update the overview field ONLY if it's currently empty
             # (preserve transcription.txt content if already loaded)
             overview = movie.get('overview', '')
-            current_overview = self.overview_textbox.get("1.0", "end-1c").strip() if hasattr(self,
-                                                                                             'overview_textbox') else ""
+            current_overview = self._overview_user_text()
 
             if not current_overview and overview:
                 self._update_overview_field(overview)

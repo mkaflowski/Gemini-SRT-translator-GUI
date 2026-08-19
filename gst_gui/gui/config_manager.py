@@ -114,7 +114,7 @@ class ConfigManager:
             'is_tv_series': False,
             'translation_type': 'Default',
             'add_translator_info': True,
-            'batch_size': 300
+            'batch_size': 350
         }
         self.load_config()
         print(f"📁 Config file: {self.config_file}")

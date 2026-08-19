@@ -244,16 +244,28 @@ class GeminiSRTTranslator:
                 description=self.description,
             ),
             service_tier=self.service_tier if not self.use_enterprise else None,
-            thinking_config=(
-                types.ThinkingConfig(
-                    include_thoughts=self.thinking,
-                    thinking_budget=self.thinking_budget,
-                    thinking_level=self.thinking_level,
-                )
-                if thinking_compatible
-                else None
-            ),
+            thinking_config=self._get_thinking_config(thinking_compatible),
         )
+
+    def _get_thinking_config(self, thinking_compatible: bool):
+        """Build ThinkingConfig, skipping fields the installed SDK does not know.
+
+        `thinking_level` only exists in newer google-genai releases; passing it
+        (even as None) to an older one raises a pydantic "extra_forbidden" error.
+        """
+        if not thinking_compatible:
+            return None
+
+        supported = set(getattr(types.ThinkingConfig, "model_fields", {}) or {})
+        kwargs = {"include_thoughts": self.thinking}
+        for name, value in (
+            ("thinking_budget", self.thinking_budget),
+            ("thinking_level", self.thinking_level),
+        ):
+            if value is None or (supported and name not in supported):
+                continue
+            kwargs[name] = value
+        return types.ThinkingConfig(**kwargs)
 
     def _get_transcribe_config(self):
         """Get the configuration for the transcription model."""
@@ -303,15 +315,7 @@ class GeminiSRTTranslator:
                 description=self.description,
             ),
             service_tier=self.service_tier if not self.use_enterprise else None,
-            thinking_config=(
-                types.ThinkingConfig(
-                    include_thoughts=self.thinking,
-                    thinking_budget=self.thinking_budget,
-                    thinking_level=self.thinking_level,
-                )
-                if thinking_compatible
-                else None
-            ),
+            thinking_config=self._get_thinking_config(thinking_compatible),
         )
 
     def _check_saved_progress(self):

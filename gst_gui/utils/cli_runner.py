@@ -481,7 +481,7 @@ class CLIRunner:
 
         # Add model
         model = config.get('model', 'gemini-2.5-flash')
-        batch_size = config.get('batch_size', 300)
+        batch_size = config.get('batch_size', 350)
         cmd.extend(['--model', model])
         self.log(f"   🤖 Model: {model}")
 
