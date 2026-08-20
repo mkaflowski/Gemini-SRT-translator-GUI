@@ -272,11 +272,81 @@ class CLIRunner:
                     # Add translator info to the processed subtitle file
                     self.add_translator_info(output_file, translator_info)
 
+                if config.get('fix_subtitles', True):
+                    self.fix_subtitle_file(output_file)
+
+                if config.get('ai_review_after_translation', False):
+                    self.review_subtitle_file(output_file, subtitle_file, config)
+
             except Exception as e:
                 self.log(f"⚠️ Could not add translator info: {e}")
                 # Don't fail the whole process for this
 
         return success
+
+    def fix_subtitle_file(self, subtitle_file):
+        """Fix line breaks and display times in place. Never fails the translation."""
+        try:
+            from gst_gui.utils import srt_fix
+        except ImportError:
+            self.log("⚠️ Subtitle fixer not available - skipping")
+            return None
+
+        try:
+            _, stats = srt_fix.fix_srt(str(subtitle_file))
+        except Exception as e:
+            self.log(f"⚠️ Could not fix subtitles: {e}")
+            return None
+
+        self.log(
+            f"✨ Fixed {Path(subtitle_file).name}: "
+            f"{stats['rewrapped']} lines re-wrapped "
+            f"(too long: {stats['too_long_before']} → {stats['too_long_after']}), "
+            f"{stats.get('extended', 0)} timings extended, "
+            f"{stats.get('gaps_fixed', 0)} gaps fixed")
+        if stats.get('still_short'):
+            self.log(f"✨ {stats['still_short']} subtitles stay too short - "
+                     f"no room between neighbours")
+        return stats
+
+    def review_subtitle_file(self, translated_file, source_file, config):
+        """Let Gemini review the translation and apply its fixes. Never fails the run."""
+        if not source_file:
+            self.log("🔍 AI review skipped - no source subtitle file to compare against")
+            return None
+
+        try:
+            from gst_gui.utils import srt_review
+        except ImportError:
+            self.log("⚠️ Subtitle reviewer not available - skipping")
+            return None
+
+        api_key = config.get('gemini_api_key') or None
+        batch = srt_review.review_batch_size(config.get('batch_size'))
+        self.log(f"🔍 AI review of {Path(translated_file).name} against "
+                 f"{Path(source_file).name} (batch {batch})")
+
+        try:
+            _, stats = srt_review.review_srt(
+                str(translated_file), str(source_file),
+                api_key=api_key,
+                model=config.get('model'),
+                language=config.get('language'),
+                description=config.get('overview', '') or '',
+                batch_size=batch,
+                apply=True,
+                report_path="-",   # po tłumaczeniu wynik idzie do konsoli, bez pliku
+                log=self.log,
+            )
+        except Exception as e:
+            self.log(f"⚠️ AI review failed: {e}")
+            return None
+
+        counts = ", ".join(f"{c}: {n}" for c, n in stats["by_category"].items() if n)
+        self.log(f"🔍 AI review done: {stats['issues']} issue(s)"
+                 + (f" ({counts})" if counts else "")
+                 + f", {stats['applied']} applied")
+        return stats
 
     def _get_output_file_path(self, subtitle_file, config):
         """Get the output file path that would be created by gst command"""

@@ -68,22 +68,41 @@ class DragDropHandler:
             return
 
         # Parse the dropped file paths
-        file_paths = self.parse_dropped_files(files_data)
+        file_paths = self._split_tcl_list(files_data) or self.parse_dropped_files(files_data)
 
         if not file_paths:
             self.logger("❌ Cannot parse dropped files")
             messagebox.showerror("Error", f"Cannot parse file paths:\n{files_data}")
             return
 
-        # Process each dropped file/folder
+        # Everything dropped at once is handed over as one batch, so the
+        # receiver can clear its list once instead of once per file
+        existing, missing = [], []
         for file_path in file_paths:
-            if Path(file_path).exists():
-                self.logger(f"📁 Processing: {file_path}")
-                if self.on_drop_callback:
-                    self.on_drop_callback(file_path)
-            else:
-                self.logger(f"❌ File not found: {file_path}")
-                messagebox.showerror("Error", f"Cannot find file:\n{file_path}")
+            (existing if Path(file_path).exists() else missing).append(file_path)
+
+        if missing:
+            self.logger(f"❌ File not found: {', '.join(missing)}")
+            messagebox.showerror(
+                "Error", "Cannot find file:\n" + "\n".join(missing))
+
+        if existing and self.on_drop_callback:
+            self.logger(f"📁 Processing {len(existing)} dropped item(s)")
+            self.on_drop_callback(existing)
+
+    def _split_tcl_list(self, files_data):
+        """Split the drop payload with Tcl's own list parser.
+
+        tkdnd hands over a Tcl list - paths containing spaces are wrapped in
+        braces (``{/Users/me/My Films/a.srt} {/Users/me/b.srt}``).  Tk splits
+        that correctly; our manual parsing is only a fallback.
+        """
+        try:
+            parts = self.widget.tk.splitlist(files_data)
+        except Exception:
+            return []
+        paths = [self._parse_single_path(part) for part in parts]
+        return [p for p in paths if p]
 
     def parse_dropped_files(self, files_data):
         """
@@ -110,16 +129,16 @@ class DragDropHandler:
                 if path:
                     file_paths.append(path)
 
-        # Format 2: Single file or multiple files separated by spaces
+        # Format 2: Single file or several paths on one line
         else:
             # Try to parse as single path first
             single_path = self._parse_single_path(files_data)
             if single_path and Path(single_path).exists():
                 file_paths.append(single_path)
             else:
-                # Try to split by spaces (for multiple files)
-                parts = files_data.split()
-                for part in parts:
+                # {/path with spaces/a.srt} {/path/b.srt} or /path/a.srt /path/b.srt
+                import re
+                for part in re.findall(r'\{[^{}]*\}|\S+', files_data):
                     path = self._parse_single_path(part)
                     if path and Path(path).exists():
                         file_paths.append(path)
@@ -380,22 +399,30 @@ class DropAreaHandler:
         """Handle click events for file selection"""
         self.file_selection.browse_files_or_folder()
 
-    def _handle_file_or_folder(self, path):
-        """Handle file or folder from either drag & drop or selection"""
-        try:
-            path_obj = Path(path)
+    def _handle_file_or_folder(self, paths):
+        """Handle one path or a whole batch of them (drag & drop or file dialog)"""
+        if isinstance(paths, (str, Path)):
+            paths = [paths]
 
+        valid = []
+        for path in paths:
+            try:
+                path_obj = Path(path)
+            except Exception as e:  # noqa: BLE001
+                self.logger(f"❌ Error processing path '{path}': {e}")
+                continue
             if not path_obj.exists():
                 messagebox.showerror("Error", f"Path does not exist: {path}")
-                return
+                continue
+            valid.append(path_obj)
 
-            self.logger(f"📁 Processing: {path}")
+        if not valid or not self.on_file_callback:
+            return
 
-            if self.on_file_callback:
-                self.on_file_callback(path_obj)
-
+        try:
+            self.on_file_callback(valid if len(valid) > 1 else valid[0])
         except Exception as e:
-            error_msg = f"Error processing path '{path}': {e}"
+            error_msg = f"Error processing dropped items: {e}"
             self.logger(f"❌ {error_msg}")
             messagebox.showerror("Processing Error", error_msg)
 
