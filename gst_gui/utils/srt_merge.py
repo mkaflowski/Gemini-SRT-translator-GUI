@@ -540,12 +540,28 @@ def merge_cues(
     return merged, stats
 
 
+def strip_lang_suffix(stem: str) -> str:
+    """Utnij końcowy człon z kodem języka: ``Film.KyoGo.en`` -> ``Film.KyoGo``.
+
+    Bez tego scalanie pliku ``Film.en.srt`` dawało ``Film.en.en_fr.srt`` —
+    kod języka pojawiał się dwa razy.
+    """
+    head, dot, last = stem.rpartition(".")
+    if dot and last.lower() in LANG_CODES:
+        return head
+    return stem
+
+
 def default_output_path(
     path_base: str, lang_base: str = "en", lang_other: str = "fr"
 ) -> str:
-    """``/x/Pressure.eng.srt`` + (en, fr) -> ``/x/Pressure.eng.en_fr.srt``."""
+    """``/x/Film.en.srt`` + (en, fr) -> ``/x/Film.en_fr.srt``.
+
+    Stary kod języka w nazwie jest zastępowany parą języków pliku scalonego.
+    """
     root = path_base[:-4] if path_base.lower().endswith(".srt") else path_base
-    return f"{root}.{lang_base}_{lang_other}.srt"
+    folder, sep, name = root.rpartition(os.sep)
+    return f"{folder}{sep}{strip_lang_suffix(name)}.{lang_base}_{lang_other}.srt"
 
 
 def merge_srt(
