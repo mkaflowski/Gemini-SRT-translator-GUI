@@ -3,3 +3,4 @@ gui_config.json
 __pycache__/
 *.egg-info/
 /tempgst_check/
+.DS_Store
