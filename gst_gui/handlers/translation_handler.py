@@ -27,6 +27,10 @@ class TranslationConfig:
         self.add_translator_info = kwargs.get('add_translator_info', True)
         self.batch_size = kwargs.get('batch_size', True)
 
+        # Post-processing of the finished file
+        self.fix_subtitles = kwargs.get('fix_subtitles', True)
+        self.ai_review_after_translation = kwargs.get('ai_review_after_translation', False)
+
         # Content Information
         self.overview = kwargs.get('overview', '')
         self.movie_title = kwargs.get('movie_title', '')
@@ -73,7 +77,9 @@ class TranslationConfig:
             'cancel_event': self.cancel_event,
             'add_translator_info': self.add_translator_info,
             'translation_type': self.translation_type,
-            'batch_size': self.batch_size
+            'batch_size': self.batch_size,
+            'fix_subtitles': self.fix_subtitles,
+            'ai_review_after_translation': self.ai_review_after_translation
         }
 
 
