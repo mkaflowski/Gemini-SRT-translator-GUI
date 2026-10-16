@@ -10,6 +10,8 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
           [--batch-size 300]
   apply <srt> --out-dir DIR -o OUT  build the translated SRT from DIR/out_001.json ... (timings from <srt>)
           [--stamp "# Translated by ... #"]
+  stamp <srt> --model NAME          add "# Translated by NAME #" as the first subtitle (like the GUI;
+                                    replaces an existing stamp instead of adding a second one)
   review-split <translated> <source> --out-dir DIR [--batch-size 150]
                                     pair translation with source by time, for the review
   review-apply <translated> <fixes.json>
@@ -208,13 +210,27 @@ def cmd_apply(args):
             continue
         result.append(Cue(start=cue.start, end=cue.end, lines=lines, coords=cue.coords))
     if args.stamp:
-        first = result[0].start if result else 5000
-        end = min(first, 5000)
-        result.insert(0, Cue(start=1000 if end == 5000 else 0, end=end, lines=[args.stamp]))
+        result = add_stamp(result, args.stamp)
     with open(args.output, 'w', encoding='utf-8', newline='') as fh:
         fh.write(format_srt(result))
     out({'output': os.path.abspath(args.output), 'cues': len(result), 'untranslated': len(missing)})
     return 0
+
+
+def add_stamp(cues, text):
+    """Put the translator info first, timed like the GUI does: it ends at the first
+    subtitle (max 5 s) and starts at 1 s when there is room, else at 0 s."""
+    cues = [c for c in cues if not (len(c.lines) == 1 and STAMP_RE.match(c.lines[0].strip()))]
+    end = min(cues[0].start if cues else 5000, 5000)
+    return [Cue(start=1000 if end == 5000 else 0, end=end, lines=[text])] + cues
+
+
+def cmd_stamp(args):
+    text = f"# Translated by {args.model.strip()} #"
+    cues = add_stamp(parse_srt(read_text(args.srt)), text)
+    with open(args.srt, 'w', encoding='utf-8', newline='') as fh:
+        fh.write(format_srt(cues))
+    out({'output': os.path.abspath(args.srt), 'stamp': text})
 
 
 def _overlap(a, b):
@@ -295,6 +311,9 @@ def main():
     p = sub.add_parser('apply'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
     p.add_argument('-o', '--output', required=True); p.add_argument('--stamp', default='')
     p.add_argument('--allow-missing', action='store_true'); p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser('stamp'); p.add_argument('srt'); p.add_argument('--model', required=True)
+    p.set_defaults(func=cmd_stamp)
 
     p = sub.add_parser('review-split'); p.add_argument('translated'); p.add_argument('source')
     p.add_argument('--out-dir', required=True); p.add_argument('--batch-size', type=int, default=150)
