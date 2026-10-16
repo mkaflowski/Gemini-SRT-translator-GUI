@@ -16,6 +16,8 @@ Below, `$S` means the absolute path to the `scripts/` folder of this skill. Run 
 
 **Asking the user.** Ask one thing at a time and always show the default. In Claude Code use the question tool (AskUserQuestion) with the default as the first option. In other tools (OpenCode, Antigravity) ask in chat and wait for the answer. Talk to the user in their language.
 
+**The workflow always ends with step 10**: asking whether to change the language code in the file name to `ar` (the user's mark for AI translations). Never finish without asking it.
+
 ## Step 1: Movie folder
 
 Ask for the path to the movie folder (or the video file, in which case take its folder). Then run:
@@ -37,7 +39,7 @@ python "$S/subs_tool.py" extract "<video>" --tracks 0,2
 
 Files are saved as `<video name>.<lang>.srt`. If the result has `"status": "exists"`, ask whether to **overwrite** or **add a number** (`numbered_alternative`), then rerun for those tracks with `--on-exists overwrite` or `--on-exists number`. Finally run `scan` again.
 
-If there are several episodes in the folder, do steps 2 to 10 for each video (ask once and apply the same choices to all of them). Steps 3 to 6 only need to be asked once per season.
+If there are several episodes in the folder, do steps 2 to 10 for each video (ask once and apply the same choices to all of them; for step 10 one question covers all the episodes, listing the files that will be renamed). Steps 3 to 6 only need to be asked once per season.
 
 ## Step 3: Merging two subtitle files
 
@@ -161,11 +163,15 @@ Collect the corrections in `$W/fixes.json` as `[{"index": "12", "text": "the who
 python "$S/subs_tool.py" review-apply "<output.srt>" "$W/fixes.json"
 ```
 
-## Step 10: Mark the file as an AI translation
+## Step 10: Mark the file as an AI translation (always ask)
+
+**This question is mandatory.** Ask it every time a translated file has been written, whatever the answers to the earlier steps were: also when the review in step 9 was declined, and also after resuming interrupted work. Skip it only when the output name already ends with `.ar.srt` (or the code the user gave for AI translations).
 
 The user marks AI translations with the code `ar` in the file name instead of the language code. Ask whether to change the language code in the output file name, e.g. `Film.pl.srt` → `Film.ar.srt`. **Default: yes, to `ar`**; the user can also give a different code or keep the name.
 Only the last language code before `.srt` is replaced (`<name>.<code>.srt` or `<name>.<n>.<code>.srt`). If the new name already exists, ask whether to overwrite it or add a number (`<name>.2.ar.srt`). Rename the file with your file tools or the shell (`mv` / `Move-Item`).
 
 ## End
+
+Before finishing, check that the step 10 question was asked for **every** translated file. If it wasn't, ask it now.
 
 Give the path of the finished file and a short summary (number of subtitles, batches, Fix subs result, number of review corrections). Ask whether to delete the video's working folder `$W` (do not delete it without the user's consent). For a series, keep `glossary.md` until the last episode is done.
