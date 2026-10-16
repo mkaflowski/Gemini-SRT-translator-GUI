@@ -87,12 +87,17 @@ def pick_matching_track(tracks, wanted):
     """
     Find the track in `tracks` that best matches the `wanted` track
     (chosen on another file of the same series). Match priority:
-    same language+title -> same language -> same type_index -> first text track.
+    identical track (language+title+index) -> same language+title -> same language
+    -> same type_index -> first text track.
     Returns a track dict or None.
     """
     text_tracks = [t for t in tracks if t['text_based']]
     if not text_tracks:
         return None
+    for t in text_tracks:
+        if (t['type_index'] == wanted['type_index'] and t['language'] == wanted.get('language', '')
+                and t['title'] == wanted.get('title', '')):
+            return t
     if wanted.get('language'):
         same_lang = [t for t in text_tracks if t['language'] == wanted['language']]
         for t in same_lang:

@@ -51,6 +51,13 @@ from gst_gui.utils.subtitle_tracks import (
     pick_matching_track,
     extract_subtitle_track,
 )
+from gst_gui.utils.languages import (
+    normalize_language,
+    language_label,
+    country_code,
+    detect_language_from_filename,
+)
+from gst_gui.utils.flags import flag_image
 from gst_gui.utils import video_description_with_splitting as vdesc
 from gst_gui.utils import srt_merge
 from gst_gui.utils import srt_fix
@@ -148,6 +155,12 @@ class DragDropGUI:
 
         # Store current folder path for building full file paths
         self.current_folder_path = None
+
+        # True while the post-translation AI review runs
+        self._post_review_running = False
+
+        # Cached flag images for the file list: {country code: PhotoImage}
+        self._flag_images = {}
 
         # Set window to front
         self.root.lift()
@@ -366,10 +379,13 @@ class DragDropGUI:
         # Configure TreeView style BEFORE creating the TreeView
         self._configure_treeview_style()
 
-        # TreeView widget (keeping tkinter TreeView for functionality)
+        # TreeView widget (keeping tkinter TreeView for functionality).
+        # 'Lang' is stored last in the values tuple (so existing value indices
+        # stay valid) but displayed right after the subtitle file.
         self.tree = tk.ttk.Treeview(
             self.tree_container,
-            columns=('SubtitleFile', 'VideoFile', 'Title', 'Year', 'FolderPath', 'Status'),
+            columns=('SubtitleFile', 'VideoFile', 'Title', 'Year', 'FolderPath', 'Status', 'Lang'),
+            displaycolumns=('SubtitleFile', 'Lang', 'VideoFile', 'Title', 'Year', 'FolderPath', 'Status'),
             show='tree headings',
             style="Dark.Treeview"  # Use our custom dark style
         )
@@ -377,6 +393,8 @@ class DragDropGUI:
         # Column configuration
         self.tree.heading('#0', text='☑️ Select')
         self.tree.heading('SubtitleFile', text='📝 Subtitle File')
+        self.tree.heading('Lang', text='🌐 Lang')
+        self.tree.column('Lang', width=70, minwidth=60, anchor='center')
         self.tree.heading('VideoFile', text='🎬 Video File')
         self.tree.heading('Title', text='🎭 Title')
         self.tree.heading('Year', text='📅 Year')
@@ -736,18 +754,6 @@ class DragDropGUI:
                                                         variable=self.include_timestamps)
         self.include_timestamps_check.pack(side="left", padx=(0, 20))
 
-        # Fix line breaks and timings once the translation is done
-        self.fix_subtitles = tk.BooleanVar(value=processing_config.get('fix_subtitles', True))
-        self.fix_subtitles_check = ctk.CTkCheckBox(row1_frame, text="Fix subtitles after translation",
-                                                   variable=self.fix_subtitles)
-        self.fix_subtitles_check.pack(side="left", padx=(0, 20))
-
-        # Run the AI review (and apply its fixes) once the translation is done
-        self.ai_review_after = tk.BooleanVar(
-            value=processing_config.get('ai_review_after_translation', False))
-        self.ai_review_check = ctk.CTkCheckBox(row1_frame, text="AI review after translation",
-                                               variable=self.ai_review_after)
-        self.ai_review_check.pack(side="left", padx=(0, 20))
 
         # Batch size field (optional)
         ctk.CTkLabel(row1_frame, text="Batch size:").pack(side="left", padx=(10, 5))
@@ -1112,7 +1118,7 @@ class DragDropGUI:
                     self.status_var.set(f"Translating... {completed}/{total} done")
         self.root.after(0, update)
 
-    def _on_line_progress(self, pair_index, total_pairs, current_line, total_lines):
+    def _on_line_progress(self, pair_index, total_pairs, current_line, total_lines, verb="Translating"):
         """Within-file line progress from CLIRunner (worker thread - marshal to UI thread).
 
         Combines completed pairs with the current file's line fraction so the
@@ -1126,7 +1132,7 @@ class DragDropGUI:
             overall = max(0.0, min(1.0, overall))
             self.progress_bar.set(overall)
             self.status_var.set(
-                f"Translating... {current_line}/{total_lines} lines"
+                f"{verb}... {current_line}/{total_lines} lines"
                 + (f" (file {pair_index}/{total_pairs})" if total_pairs > 1 else "")
             )
         self.root.after(0, update)
@@ -1158,6 +1164,9 @@ class DragDropGUI:
 
     def _start_translation(self):
         """Start translation using translation manager"""
+        if self._post_review_running:
+            messagebox.showinfo("AI review", "Wait for the AI review to finish first.")
+            return
         selected_pairs = self.get_selected_pairs()
         if not selected_pairs:
             messagebox.showwarning("Warning",
@@ -1172,39 +1181,64 @@ class DragDropGUI:
         """Cancel translation using translation manager"""
         self.translation_manager.cancel_translation()
 
-    def _get_current_config(self):
-        """Get current configuration as dictionary"""
-        # Get batch size value, validate it
-        batch_size_str = self.batch_size.get().strip() if hasattr(self, 'batch_size') else ''
-        batch_size = None
-        if batch_size_str:
-            try:
-                batch_size = int(batch_size_str)
-                if batch_size <= 0:
-                    batch_size = None
-            except ValueError:
-                batch_size = None
+    # ---------- Post-translation steps: Fix subs + AI review ----------
 
-        return {
-            'gemini_api_key': self.gemini_api_key.get(),
-            'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
-            'model': self.model.get(),
-            'fallback_models': self.fallback_models.get() if hasattr(self, 'fallback_models') else '',
-            'tmdb_api_key': self.tmdb_api_key.get(),
-            'tmdb_id': self.tmdb_id.get(),
-            'language': self.language.get(),
-            'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
-            'extract_audio': self.extract_audio.get(),
-            'include_timestamps': self.include_timestamps.get() if hasattr(self, 'include_timestamps') else False,
-            'overview': self.overview_textbox.get("1.0", "end-1c").strip() if hasattr(self, 'overview_textbox') else '',
-            'movie_title': self._get_movie_title_from_treeview(),
-            'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
-            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
-            'fix_subtitles': self.fix_subtitles.get() if hasattr(self, 'fix_subtitles') else True,
-            'ai_review_after_translation': self.ai_review_after.get() if hasattr(self, 'ai_review_after') else False,
-            'translation_type': self.translation_type.get() if hasattr(self, 'translation_type') else 'Default',
-            'batch_size': batch_size,
-        }
+    def offer_post_translation_steps(self, done_pairs, config):
+        """After translation: ask about "Fix subs", then about an AI review of the new files"""
+        outputs = [p for p in done_pairs if p.get('output') and Path(p['output']).exists()]
+        if not outputs:
+            return
+        names = '\n'.join(f'  • {Path(p["output"]).name}' for p in outputs[:5])
+        if len(outputs) > 5:
+            names += f'\n  ... and {len(outputs) - 5} more'
+
+        if messagebox.askyesno(
+                "Fix subs",
+                f"Translation finished.\n\nRun \"Fix subs\" on the translated files?\n{names}\n\n"
+                "Re-wraps too long lines and fixes display times."):
+            for p in outputs:
+                self.cli_runner.fix_subtitle_file(p['output'])
+            self.status_var.set(f"Fix subs done ({len(outputs)} files)")
+
+        reviewable = [p for p in outputs if p.get('subtitle') and Path(p['subtitle']).exists()]
+        if not reviewable:
+            self.log_to_console("🔍 AI review skipped - no source subtitle files to compare against")
+            return
+
+        if messagebox.askyesno(
+                "AI review",
+                f"Run an AI review of the new subtitles?\n\n"
+                f"Gemini ({config.get('model', '')}) compares the translation with the source\n"
+                f"subtitles it was translated from and applies its fixes.\n\n"
+                f"Files: {len(reviewable)}"):
+            self._run_post_translation_review(reviewable, config)
+
+    def _run_post_translation_review(self, pairs, config):
+        """Review each (source, translated) pair in the background, applying the fixes"""
+        self._post_review_running = True
+        self._set_button_busy(self.review_subs_button, True)
+        self.status_var.set("AI review...")
+
+        def worker():
+            total_issues = total_applied = 0
+            for i, pair in enumerate(pairs, 1):
+                self.log_to_console(f"🔍 [{i}/{len(pairs)}] {Path(pair['output']).name}")
+                stats = self.cli_runner.review_subtitle_file(pair['output'], pair['subtitle'], config)
+                if stats:
+                    total_issues += stats['issues']
+                    total_applied += stats['applied']
+
+            def finish():
+                self._post_review_running = False
+                self._set_button_busy(self.review_subs_button, False)
+                self.status_var.set(
+                    f"AI review done: {total_issues} issue(s), {total_applied} applied")
+                messagebox.showinfo(
+                    "AI review",
+                    f"AI review finished.\n\nIssues found: {total_issues}\nFixes applied: {total_applied}")
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # Keep these methods for the translation manager to call:
     def show_cancel_button(self):
@@ -1374,8 +1408,6 @@ class DragDropGUI:
             'auto_fetch_tmdb': self.auto_fetch_tmdb.get() if hasattr(self, 'auto_fetch_tmdb') else True,
             'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
             'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
-            'fix_subtitles': self.fix_subtitles.get() if hasattr(self, 'fix_subtitles') else True,
-            'ai_review_after_translation': self.ai_review_after.get() if hasattr(self, 'ai_review_after') else False,
             'translation_type': self.translation_type.get() if hasattr(self, 'translation_type') else 'Default',
             'batch_size': self.batch_size.get() if hasattr(self, 'batch_size') else '',
         }
@@ -1558,27 +1590,27 @@ class DragDropGUI:
 
         if file_type == 'text':
             # Subtitle file
-            self.tree.insert('', 'end', text='☑️ Single file',
-                             values=(file_path.name, "No match", title, year_display,
-                                     str(self.current_folder_path), "📝 Subtitle file"),
-                             tags=('subtitle_only',))
+            item_id = self.tree.insert('', 'end', text='☑️ Single file',
+                                       values=(file_path.name, "No match", title, year_display,
+                                               str(self.current_folder_path), "📝 Subtitle file",
+                                               self._lang_label_for(file_path.name)),
+                                       tags=('subtitle_only',))
+            self._set_row_flag(item_id)
         elif file_type == 'video':
             # Video file
-            self.tree.insert('', 'end', text='☑️ Single file',
-                             values=("No match", file_path.name, title, year_display,
-                                     str(self.current_folder_path), "🎬 Video file"),
-                             tags=('video_only',))
+            item_id = self.tree.insert('', 'end', text='☑️ Single file',
+                                       values=("No match", file_path.name, title, year_display,
+                                               str(self.current_folder_path), "🎬 Video file", ""),
+                                       tags=('video_only',))
+            self._auto_probe_embedded([(item_id, str(file_path))])
         else:
             # Other file type
             item_id = self.tree.insert('', 'end', text='☑️ Single file',
                                        values=(file_path.name if file_type == 'text' else "N/A",
                                                file_path.name if file_type == 'video' else "N/A",
                                                title, year_display, str(self.current_folder_path),
-                                               f"📄 {file_type.title()}"),
+                                               f"📄 {file_type.title()}", ""),
                                        tags=('no_match',))
-
-            if file_type == 'video':
-                self._auto_probe_embedded([(item_id, str(file_path))])
 
         self._update_selected_count()
 
@@ -1866,9 +1898,9 @@ class DragDropGUI:
         threading.Thread(target=probe, daemon=True).start()
 
     def _show_track_dialog(self, tracks, items, first_video):
-        """Dialog with a radio list of subtitle tracks found in the first selected video"""
+        """Dialog with a checkbox list of subtitle tracks found in the first selected video"""
         dialog = ctk.CTkToplevel(self.root)
-        dialog.title("Choose embedded subtitle track")
+        dialog.title("Choose embedded subtitle tracks")
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry(f"+{self.root.winfo_rootx() + 300}+{self.root.winfo_rooty() + 200}")
@@ -1876,34 +1908,38 @@ class DragDropGUI:
         header = f"Subtitle tracks in {Path(first_video).name}"
         if len(items) > 1:
             header += f"\n(applied to all {len(items)} selected videos, matched by language)"
+        header += "\nSelect one or more tracks to extract:"
         ctk.CTkLabel(dialog, text=header, font=ctk.CTkFont(size=13, weight="bold"),
                      justify="left").pack(anchor="w", padx=20, pady=(15, 10))
 
         # Preselect: default text track, else first text track
         text_tracks = [t for t in tracks if t['text_based']]
         preselected = next((t for t in text_tracks if t['default']), text_tracks[0] if text_tracks else None)
-        choice = tk.IntVar(value=preselected['type_index'] if preselected else -1)
 
+        track_vars = []
         for track in tracks:
-            rb = ctk.CTkRadioButton(
+            var = tk.BooleanVar(value=preselected is not None and track is preselected)
+            cb = ctk.CTkCheckBox(
                 dialog,
                 text=format_track_label(track),
-                variable=choice,
-                value=track['type_index'],
+                variable=var,
                 state="normal" if track['text_based'] else "disabled"
             )
-            rb.pack(anchor="w", padx=25, pady=4)
+            cb.pack(anchor="w", padx=25, pady=4)
+            track_vars.append((track, var))
 
         buttons = ctk.CTkFrame(dialog, fg_color="transparent")
         buttons.pack(fill="x", padx=20, pady=(15, 15))
 
         def on_extract():
-            selected = next((t for t in tracks if t['type_index'] == choice.get()), None)
+            selected = [t for t, var in track_vars if var.get() and t['text_based']]
+            if not selected:
+                messagebox.showwarning("Embedded subtitles", "Select at least one track.", parent=dialog)
+                return
             dialog.destroy()
-            if selected:
-                self._extract_tracks_for_items(items, selected)
+            self._extract_tracks_for_items(items, selected)
 
-        ctk.CTkButton(buttons, text="Extract && use", command=on_extract,
+        ctk.CTkButton(buttons, text="Extract", command=on_extract,
                       fg_color=("green", "darkgreen")).pack(side="left", padx=(0, 10))
         ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy,
                       fg_color="transparent", border_width=1,
@@ -1913,51 +1949,141 @@ class DragDropGUI:
             ctk.CTkLabel(dialog, text="⚠️ Only bitmap tracks found - they cannot be converted to SRT",
                          text_color="orange").pack(padx=20, pady=(0, 10))
 
-    def _extract_tracks_for_items(self, items, wanted_track):
-        """Extract the chosen track from every selected video (background thread)"""
+    def _ask_on_ui_thread(self, func):
+        """Run a (dialog) function on the Tk thread from a worker thread and return its result"""
+        done = threading.Event()
+        result = {}
+
+        def run():
+            try:
+                result['value'] = func()
+            finally:
+                done.set()
+
+        self.root.after(0, run)
+        done.wait()
+        return result.get('value')
+
+    def _subtitle_output_path(self, video_path, track, created_this_run):
+        """
+        Target path '<video stem>.<lang>.srt' for an extracted track.
+        If it already exists, ask whether to overwrite or add a number
+        ('<stem>.2.<lang>.srt'). Returns None when the user chooses to skip.
+        """
+        video = Path(video_path)
+        lang = normalize_language(track['language']) or track['language'] or f"track{track['type_index'] + 1}"
+        target = video.parent / f"{video.stem}.{lang}.srt"
+
+        def numbered():
+            n = 2
+            while True:
+                candidate = video.parent / f"{video.stem}.{n}.{lang}.srt"
+                if not candidate.exists() and candidate not in created_this_run:
+                    return candidate
+                n += 1
+
+        # Two selected tracks with the same language in one run: number the next one silently
+        if target in created_this_run:
+            return numbered()
+        if not target.exists():
+            return target
+
+        answer = self._ask_on_ui_thread(lambda: messagebox.askyesnocancel(
+            "File exists",
+            f"{target.name} already exists.\n\n"
+            f"Yes - overwrite it\n"
+            f"No - save with a number ({numbered().name})\n"
+            f"Cancel - skip this track"
+        ))
+        if answer is None:
+            return None
+        return target if answer else numbered()
+
+    def _extract_tracks_for_items(self, items, wanted_tracks):
+        """Extract the chosen tracks from every selected video (background thread)"""
         self.status_var.set("Extracting embedded subtitles...")
         self._set_button_busy(self.embedded_subs_button, True)
+        # Read the tree on the UI thread; the worker only gets plain paths
+        video_paths = [p for p in (self._video_path_for_item(i) for i in items) if p]
 
         def worker():
             ok_count = 0
-            for item in items:
-                video_path = self._video_path_for_item(item)
-                if not video_path:
-                    continue
+            total = 0
+            created = set()
+            for video_path in video_paths:
 
                 tracks = self._probe_tracks_cached(video_path)
-                track = pick_matching_track(tracks, wanted_track)
-                if not track:
+                # Map each wanted track to this video's track (dedupe if two map to the same one)
+                matched = []
+                for wanted in wanted_tracks:
+                    track = pick_matching_track(tracks, wanted)
+                    if track and track not in matched:
+                        matched.append(track)
+                if not matched:
                     self.log_to_console(f"⚠️ No matching text subtitle track in: {Path(video_path).name}")
                     continue
 
-                lang = track['language'] or f"track{track['type_index'] + 1}"
-                stem = Path(video_path).stem
-                output = str(Path(video_path).parent / f"{stem}_extracted_{lang}.srt")
-                result = extract_subtitle_track(video_path, track['type_index'], output)
-
-                if result:
-                    ok_count += 1
-                    self.log_to_console(
-                        f"🎞 Extracted '{format_track_label(track)}' → {Path(result).name}")
-
-                    def update_row(item=item, srt_name=Path(result).name):
-                        if not self.tree.exists(item):
-                            return
-                        values = list(self.tree.item(item, 'values'))
-                        values[0] = srt_name
-                        values[5] = "✅ Matched"
-                        self.tree.item(item, values=values, tags=('matched',))
-                    self.root.after(0, update_row)
-                else:
-                    self.log_to_console(f"❌ Extraction failed for: {Path(video_path).name}")
+                for track in matched:
+                    total += 1
+                    output = self._subtitle_output_path(video_path, track, created)
+                    if output is None:
+                        self.log_to_console(f"⏭️ Skipped '{format_track_label(track)}' ({Path(video_path).name})")
+                        continue
+                    result = extract_subtitle_track(video_path, track['type_index'], str(output))
+                    if result:
+                        ok_count += 1
+                        created.add(Path(result))
+                        self.log_to_console(
+                            f"🎞 Extracted '{format_track_label(track)}' → {Path(result).name}")
+                    else:
+                        self.log_to_console(
+                            f"❌ Extraction failed: '{format_track_label(track)}' ({Path(video_path).name})")
 
             def finish():
                 self._set_button_busy(self.embedded_subs_button, False)
-                self.status_var.set(f"Extracted subtitles from {ok_count}/{len(items)} videos")
+                self.status_var.set(f"Extracted {ok_count}/{total} subtitle tracks")
+                if ok_count:
+                    self.refresh_file_list()
             self.root.after(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def refresh_file_list(self):
+        """Rescan the current folder and rebuild the file list (keeps TMDB ID / overview)"""
+        folder = self.current_folder_path
+        if not folder or not Path(folder).is_dir():
+            return
+        folder = Path(folder)
+        self.log_to_console(f"🔄 Refreshing file list: {folder}")
+        found_files = scan_folder_for_files(folder)
+        self.add_subtitle_matches_to_treeview(found_files, folder, keep_metadata=True)
+
+    def _lang_label_for(self, filename):
+        """Language column text for a subtitle file name, e.g. 'FR' (or 'EN+FR' for merged files)"""
+        merged = srt_merge.parse_merged_name(str(filename))
+        if merged:
+            return '+'.join(language_label(c) or c.upper() for c in merged)
+        return language_label(detect_language_from_filename(filename))
+
+    def _set_row_flag(self, item):
+        """Show the flag of the row's subtitle language as the row icon.
+
+        Flag emoji don't render on Windows (no glyphs, and Tk can't draw colour
+        emoji), so small flag images drawn with Pillow are used instead.
+        """
+        if not self.tree.exists(item):
+            return
+        values = self.tree.item(item, 'values')
+        label = values[6] if len(values) > 6 else ''
+        country = country_code(label.split('+')[0]) if label else ''
+        if not country:
+            self.tree.item(item, image='')
+            return
+        if country not in self._flag_images:
+            img = flag_image(country)
+            self._flag_images[country] = ImageTk.PhotoImage(img) if img else None
+        photo = self._flag_images[country]
+        self.tree.item(item, image=photo if photo else '')
 
     def _auto_probe_embedded(self, video_items):
         """Background: check videos without subtitles for embedded tracks, update status"""
@@ -1975,7 +2101,7 @@ class DragDropGUI:
                         return
                     values = list(self.tree.item(item, 'values'))
                     # Only annotate rows that still have no subtitle file
-                    if values[0] in ('', 'None', 'N/A'):
+                    if values[0] in ('', 'None', 'N/A', 'No match'):
                         values[5] = f"🎞 {count} embedded subs"
                         self.tree.item(item, values=values)
                 self.root.after(0, update_row)
@@ -2476,9 +2602,12 @@ class DragDropGUI:
             values[0] = Path(out_path).name
             values[4] = str(Path(out_path).parent)
             values[5] = "🔀 Merged"
+            if len(values) > 6:
+                values[6] = self._lang_label_for(out_path)
             merged_item = self.tree.insert(
                 '', self.tree.index(base_item) + 1,
                 text='☑️ Merged', values=values, tags=('matched',))
+            self._set_row_flag(merged_item)
 
         for item, name in ((base_item, Path(base_path).name),
                            (ref_item, Path(ref_path).name)):
@@ -2729,6 +2858,10 @@ class DragDropGUI:
             # Direct match
             if subtitle_stem in video_stems:
                 matched_video = video_stems[subtitle_stem]
+            elif any(subtitle_stem.startswith(v + '.') for v in video_stems):
+                # '<video>.fr.srt', '<video>.2.fr.srt' etc. (longest video stem wins)
+                best_stem = max((v for v in video_stems if subtitle_stem.startswith(v + '.')), key=len)
+                matched_video = video_stems[best_stem]
             else:
                 # Try to find partial matches
                 best_match = None
@@ -2768,9 +2901,16 @@ class DragDropGUI:
 
         return matches
 
-    def add_subtitle_matches_to_treeview(self, found_files, folder_path, clear=True):
-        """Add subtitle-video matches to TreeView"""
-        if clear:
+    def add_subtitle_matches_to_treeview(self, found_files, folder_path, clear=True, keep_metadata=False):
+        """Add subtitle-video matches to TreeView.
+
+        clear=False appends to the current list; keep_metadata=True only clears
+        the rows (keeps TMDB ID / overview), used when refreshing the same folder.
+        """
+        if keep_metadata:
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+        elif clear:
             self.clear_treeview()
         self.current_folder_path = folder_path
 
@@ -2779,7 +2919,7 @@ class DragDropGUI:
 
         if not subtitle_files and not video_files:
             self.tree.insert('', 'end', text='ℹ️ No subtitle or video files',
-                             values=('', '', 'No files found', '', str(folder_path), 'Drag folder with files'),
+                             values=('', '', 'No files found', '', str(folder_path), 'Drag folder with files', ''),
                              tags=('no_match',))
             return
 
@@ -2804,10 +2944,12 @@ class DragDropGUI:
 
             item_text = f"☑️ Pair {i + 1}"
 
+            lang = self._lang_label_for(match['subtitle'].name) if match['subtitle'] else ""
             item_id = self.tree.insert('', 'end', text=item_text,
                                        values=(subtitle_name, video_name, title, year_display, str(folder_path),
-                                               match['status']),
+                                               match['status'], lang),
                                        tags=(match['tag'],))
+            self._set_row_flag(item_id)
 
             # Videos without a matched subtitle: check for embedded tracks in background
             # (scan returns paths relative to the folder, so join with folder_path)

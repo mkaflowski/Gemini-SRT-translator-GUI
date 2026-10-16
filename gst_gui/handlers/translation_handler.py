@@ -592,3 +592,11 @@ class TranslationManager:
                 self.main_window.log_to_console("❌ Errors encountered:")
                 for error in summary['errors']:
                     self.main_window.log_to_console(f"   • {error['file']}: {error['error']}")
+
+        # Offer "Fix subs" and AI review for the files translated in this run
+        # (called from the worker thread - dialogs must run on the Tk thread).
+        done_pairs = list(getattr(self.handler.cli_runner, 'last_successful_pairs', []) or [])
+        if done_pairs and not summary['was_cancelled'] and not summary.get('fatal_error'):
+            config_dict = dict(self.handler._current_config_dict)
+            self.main_window.root.after(
+                300, lambda: self.main_window.offer_post_translation_steps(done_pairs, config_dict))

@@ -42,6 +42,7 @@ class CLIRunner:
         # resolves to the vendored copy shipped inside this repo.
         self.gst_root = None
         self.gst_cmd = self._find_gst_command()
+        self.last_successful_pairs = []
 
     def _notify_progress(self, completed, total):
         """Report overall progress (safe to call from worker thread)"""
@@ -141,6 +142,9 @@ class CLIRunner:
         self.log("─" * 30)
 
         success_count = 0
+        # Pairs translated successfully in this batch, with their output file
+        # (used for the post-translation "Fix subs" / AI review steps).
+        self.last_successful_pairs = []
         total_count = len(file_pairs)
         self._batch_total = total_count if total_count > 0 else 1
         cancel_event = config.get('cancel_event')
@@ -159,6 +163,11 @@ class CLIRunner:
             success = self._run_single_translation(pair, config, i)
             if success:
                 success_count += 1
+                source = pair.get('subtitle') or pair.get('video')
+                self.last_successful_pairs.append({
+                    **pair,
+                    'output': str(self._get_output_file_path(source, config)),
+                })
                 self._notify_pair_status(pair, 'done')
             elif cancel_event and cancel_event.is_set():
                 self._notify_pair_status(pair, 'cancelled')
@@ -271,12 +280,6 @@ class CLIRunner:
 
                     # Add translator info to the processed subtitle file
                     self.add_translator_info(output_file, translator_info)
-
-                if config.get('fix_subtitles', True):
-                    self.fix_subtitle_file(output_file)
-
-                if config.get('ai_review_after_translation', False):
-                    self.review_subtitle_file(output_file, subtitle_file, config)
 
             except Exception as e:
                 self.log(f"⚠️ Could not add translator info: {e}")
