@@ -129,6 +129,11 @@ Collect the corrections in `.translate_work/fixes.json` as `[{"index": "12", "te
 python "$S/subs_tool.py" review-apply "<output.srt>" "<folder>/.translate_work/fixes.json"
 ```
 
+## Step 10: Mark the file as an AI translation
+
+The user marks AI translations with the code `ar` in the file name instead of the language code. Ask whether to change the language code in the output file name, e.g. `Film.pl.srt` → `Film.ar.srt`. **Default: yes, to `ar`**; the user can also give a different code or keep the name.
+Only the last language code before `.srt` is replaced (`<name>.<code>.srt` or `<name>.<n>.<code>.srt`). If the new name already exists, ask whether to overwrite it or add a number (`<name>.2.ar.srt`). Rename the file with your file tools or the shell (`mv` / `Move-Item`).
+
 ## End
 
 Give the path of the finished file and a short summary (number of subtitles, batches, Fix subs result, number of review corrections). Ask whether to delete the `.translate_work` working folder (do not delete it without the user's consent).
