@@ -114,8 +114,7 @@ class ConfigManager:
             'is_tv_series': False,
             'translation_type': 'Default',
             'add_translator_info': True,
-            'fix_subtitles': True,
-            'ai_review_after_translation': False,
+            'ai_mark_code': 'ar',
             'batch_size': 350
         }
         self.load_config()
@@ -223,8 +222,7 @@ class ConfigManager:
             'is_tv_series': self.get('is_tv_series', False),
             'translation_type': self.get('translation_type', 'Default'),
             'add_translator_info': self.get('add_translator_info', True),
-            'fix_subtitles': self.get('fix_subtitles', True),
-            'ai_review_after_translation': self.get('ai_review_after_translation', False),
+            'ai_mark_code': self.get('ai_mark_code', 'ar'),
             'batch_size': self.get('batch_size', True)
         }
 
