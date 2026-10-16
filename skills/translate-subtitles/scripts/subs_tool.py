@@ -7,7 +7,8 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
   extract <video> --tracks 0,2      extract tracks to <video>.<lang>.srt
           [--on-exists error|overwrite|number|skip]
   split <srt> --out-dir DIR         cut a subtitle file into translation batches (batch_001.json ...)
-          [--batch-size 300]
+          [--batch-size 100]        at scene breaks (long pauses after a finished sentence),
+          [--context 10 --context-after 5]   with read-only context from the neighbouring batches
   apply <srt> --out-dir DIR -o OUT  build the translated SRT from DIR/out_001.json ... (timings from <srt>)
           [--stamp "# Translated by ... #"]
   stamp <srt> --model NAME          add "# Translated by NAME #" as the first subtitle (like the GUI;
@@ -169,22 +170,72 @@ def cmd_extract(args):
     return 0 if all(r['status'] in ('ok', 'skipped') for r in results) else 2
 
 
+SENTENCE_END_RE = re.compile(r'[.!?…♪"»)\]]\s*(</[ib]>)?\s*$', re.IGNORECASE)
+
+
+def _ends_sentence(cue):
+    """True when the cue's main text (not the {xx: ...} reference lines) ends a sentence."""
+    main = [l for l in cue.lines if not l.lstrip().startswith('{')]
+    return bool(main) and bool(SENTENCE_END_RE.search(main[-1]))
+
+
+def scene_cuts(cues, size, slack=0.3):
+    """
+    Split points close to `size` cues per batch, chosen at scene boundaries:
+    in the window size*(1-slack)..size*(1+slack) cut where the pause between two
+    subtitles is longest, preferring a cut right after a finished sentence.
+    Returns a list of (start, end) index ranges (end exclusive).
+    """
+    n = len(cues)
+    ranges, start = [], 0
+    lo_k, hi_k = max(1, int(size * (1 - slack))), max(2, int(size * (1 + slack)))
+    while start < n:
+        if n - start <= hi_k:
+            ranges.append((start, n))
+            break
+        best_k, best_score = start + size, None
+        for k in range(start + lo_k, min(n, start + hi_k + 1)):
+            gap = cues[k].start - cues[k - 1].end  # pause before cue k, ms
+            score = gap + (2000 if _ends_sentence(cues[k - 1]) else -3000)
+            if best_score is None or score > best_score:
+                best_k, best_score = k, score
+        ranges.append((start, best_k))
+        start = best_k
+    return ranges
+
+
 def cmd_split(args):
     cues = parse_srt(read_text(args.srt))
     os.makedirs(args.out_dir, exist_ok=True)
     for old in glob.glob(os.path.join(args.out_dir, 'batch_*.json')):
         os.remove(old)
+
+    def item(i):
+        return {'index': str(i + 1), 'text': cues[i].text}
+
+    if args.fixed:
+        ranges = [(s, min(s + args.batch_size, len(cues))) for s in range(0, len(cues), args.batch_size)]
+    else:
+        ranges = scene_cuts(cues, args.batch_size)
     batches = []
-    for b, start in enumerate(range(0, len(cues), args.batch_size), 1):
-        items = [{'index': str(i + 1), 'text': cues[i].text}
-                 for i in range(start, min(start + args.batch_size, len(cues)))]
+    for b, (start, end) in enumerate(ranges, 1):
+        data = {
+            'translate': [item(i) for i in range(start, end)],
+            # read-only context so sentences at the edges are not translated blind
+            'context_before': [item(i) for i in range(max(0, start - args.context), start)],
+            'context_after': [item(i) for i in range(end, min(len(cues), end + args.context_after))],
+        }
         path = os.path.join(args.out_dir, f'batch_{b:03d}.json')
         with open(path, 'w', encoding='utf-8') as fh:
-            json.dump(items, fh, ensure_ascii=False, indent=1)
-        batches.append({'batch': os.path.basename(path), 'output': f'out_{b:03d}.json',
-                        'first': items[0]['index'], 'last': items[-1]['index']})
+            json.dump(data, fh, ensure_ascii=False, indent=1)
+        info = {'batch': os.path.basename(path), 'output': f'out_{b:03d}.json',
+                'first': str(start + 1), 'last': str(end), 'count': end - start}
+        if end < len(cues):
+            info['pause_after_ms'] = cues[end].start - cues[end - 1].end
+            info['sentence_end'] = _ends_sentence(cues[end - 1])
+        batches.append(info)
     manifest = {'source': os.path.abspath(args.srt), 'cues': len(cues), 'batch_size': args.batch_size,
-                'batches': batches}
+                'split': 'fixed' if args.fixed else 'scenes', 'batches': batches}
     with open(os.path.join(args.out_dir, 'manifest.json'), 'w', encoding='utf-8') as fh:
         json.dump(manifest, fh, ensure_ascii=False, indent=1)
     out(manifest)
@@ -306,7 +357,11 @@ def main():
     p.set_defaults(func=cmd_extract)
 
     p = sub.add_parser('split'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
-    p.add_argument('--batch-size', type=int, default=300); p.set_defaults(func=cmd_split)
+    p.add_argument('--batch-size', type=int, default=100)
+    p.add_argument('--context', type=int, default=10, help='read-only cues before each batch')
+    p.add_argument('--context-after', type=int, default=5, help='read-only cues after each batch')
+    p.add_argument('--fixed', action='store_true', help='cut every N cues instead of at scene breaks')
+    p.set_defaults(func=cmd_split)
 
     p = sub.add_parser('apply'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
     p.add_argument('-o', '--output', required=True); p.add_argument('--stamp', default='')
