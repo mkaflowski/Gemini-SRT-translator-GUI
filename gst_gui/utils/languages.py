@@ -87,6 +87,27 @@ def language_label(code, with_emoji=False):
     return f"{code.upper()} {flag_emoji(code)}" if with_emoji else code.upper()
 
 
+def with_language_code(path, code, number=None):
+    """
+    Replace the language code at the end of a subtitle file name:
+    'Film.pl.srt' -> 'Film.ar.srt', 'Film.2.pl.srt' -> 'Film.2.ar.srt'.
+    Without a language code the new one is appended ('Film.srt' -> 'Film.ar.srt').
+    `number` inserts a counter before the code ('Film.2.ar.srt') to avoid collisions.
+    """
+    path = Path(path)
+    stem = path.stem
+    head, dot, last = stem.rpartition('.')
+    if dot and normalize_language(last):
+        stem = head
+    if number:
+        # drop an existing counter so 'Film.2.pl' + number 3 -> 'Film.3.ar'
+        head, dot, last = stem.rpartition('.')
+        if dot and last.isdigit() and len(last) <= 2:  # a counter, not a year like '2020'
+            stem = head
+        stem = f"{stem}.{number}"
+    return path.with_name(f"{stem}.{code}{path.suffix}")
+
+
 def detect_language_from_filename(filename):
     """
     Detect the subtitle language from tokens at the end of the file name,

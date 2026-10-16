@@ -56,6 +56,7 @@ from gst_gui.utils.languages import (
     language_label,
     country_code,
     detect_language_from_filename,
+    with_language_code,
 )
 from gst_gui.utils.flags import flag_image
 from gst_gui.utils import video_description_with_splitting as vdesc
@@ -615,6 +616,11 @@ class DragDropGUI:
         self.language_code = tk.StringVar(value=processing_config.get('language_code', 'pl'))
         self.language_code_entry = ctk.CTkEntry(language_row, textvariable=self.language_code, width=60)
         self.language_code_entry.pack(side="left", padx=(0, 20))
+
+        # Code that marks AI translations in file names (offered after translation)
+        ctk.CTkLabel(language_row, text="AI code:").pack(side="left", padx=(0, 5))
+        self.ai_mark_code = tk.StringVar(value=processing_config.get('ai_mark_code', 'ar'))
+        ctk.CTkEntry(language_row, textvariable=self.ai_mark_code, width=60).pack(side="left", padx=(0, 20))
 
         # Tabbed sections instead of expandable buttons
         self.config_tabview = ctk.CTkTabview(self.config_container, height=280)
@@ -1181,6 +1187,38 @@ class DragDropGUI:
         """Cancel translation using translation manager"""
         self.translation_manager.cancel_translation()
 
+    def _get_current_config(self):
+        """Get current configuration as dictionary"""
+        # Get batch size value, validate it
+        batch_size_str = self.batch_size.get().strip() if hasattr(self, 'batch_size') else ''
+        batch_size = None
+        if batch_size_str:
+            try:
+                batch_size = int(batch_size_str)
+                if batch_size <= 0:
+                    batch_size = None
+            except ValueError:
+                batch_size = None
+
+        return {
+            'gemini_api_key': self.gemini_api_key.get(),
+            'gemini_api_key2': self.gemini_api_key2.get() if hasattr(self, 'gemini_api_key2') else '',
+            'model': self.model.get(),
+            'fallback_models': self.fallback_models.get() if hasattr(self, 'fallback_models') else '',
+            'tmdb_api_key': self.tmdb_api_key.get(),
+            'tmdb_id': self.tmdb_id.get(),
+            'language': self.language.get(),
+            'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
+            'extract_audio': self.extract_audio.get(),
+            'include_timestamps': self.include_timestamps.get() if hasattr(self, 'include_timestamps') else False,
+            'overview': self.overview_textbox.get("1.0", "end-1c").strip() if hasattr(self, 'overview_textbox') else '',
+            'movie_title': self._get_movie_title_from_treeview(),
+            'is_tv_series': self.is_tv_series.get() if hasattr(self, 'is_tv_series') else False,
+            'add_translator_info': self.add_translator_info.get() if hasattr(self, 'add_translator_info') else True,
+            'translation_type': self.translation_type.get() if hasattr(self, 'translation_type') else 'Default',
+            'batch_size': batch_size,
+        }
+
     # ---------- Post-translation steps: Fix subs + AI review ----------
 
     def offer_post_translation_steps(self, done_pairs, config):
@@ -1203,17 +1241,59 @@ class DragDropGUI:
         reviewable = [p for p in outputs if p.get('subtitle') and Path(p['subtitle']).exists()]
         if not reviewable:
             self.log_to_console("🔍 AI review skipped - no source subtitle files to compare against")
-            return
-
-        if messagebox.askyesno(
+        elif messagebox.askyesno(
                 "AI review",
                 f"Run an AI review of the new subtitles?\n\n"
                 f"Gemini ({config.get('model', '')}) compares the translation with the source\n"
                 f"subtitles it was translated from and applies its fixes.\n\n"
                 f"Files: {len(reviewable)}"):
-            self._run_post_translation_review(reviewable, config)
+            # the rename question comes after the review has finished
+            self._run_post_translation_review(
+                reviewable, config, on_done=lambda: self._offer_ai_rename(outputs))
+            return
 
-    def _run_post_translation_review(self, pairs, config):
+        self._offer_ai_rename(outputs)
+
+    def _offer_ai_rename(self, outputs):
+        """Ask whether to mark the new files as AI translations ('Film.pl.srt' -> 'Film.ar.srt')"""
+        code = (self.ai_mark_code.get().strip() if hasattr(self, 'ai_mark_code') else 'ar') or 'ar'
+        files = [Path(p['output']) for p in outputs if Path(p['output']).exists()]
+        files = [f for f in files if with_language_code(f, code) != f]
+        if not files:
+            return
+        example = f"{files[0].name}  →  {with_language_code(files[0], code).name}"
+        if not messagebox.askyesno(
+                "Mark as AI translation",
+                f"Change the language code in the file name to \"{code}\"?\n\n{example}"
+                + (f"\n(and {len(files) - 1} more)" if len(files) > 1 else "")):
+            return
+
+        renamed = 0
+        for src in files:
+            target = with_language_code(src, code)
+            if target.exists():
+                n = 2
+                while with_language_code(src, code, number=n).exists():
+                    n += 1
+                alternative = with_language_code(src, code, number=n)
+                answer = messagebox.askyesnocancel(
+                    "File exists",
+                    f"{target.name} already exists.\n\n"
+                    f"Yes - overwrite it\nNo - save as {alternative.name}\nCancel - keep {src.name}")
+                if answer is None:
+                    continue
+                if not answer:
+                    target = alternative
+            try:
+                os.replace(src, target)
+                renamed += 1
+                self.log_to_console(f"🏷️ Renamed {src.name} → {target.name}")
+            except OSError as e:
+                self.log_to_console(f"❌ Could not rename {src.name}: {e}")
+        if renamed:
+            self.refresh_file_list()
+
+    def _run_post_translation_review(self, pairs, config, on_done=None):
         """Review each (source, translated) pair in the background, applying the fixes"""
         self._post_review_running = True
         self._set_button_busy(self.review_subs_button, True)
@@ -1236,6 +1316,8 @@ class DragDropGUI:
                 messagebox.showinfo(
                     "AI review",
                     f"AI review finished.\n\nIssues found: {total_issues}\nFixes applied: {total_applied}")
+                if on_done:
+                    on_done()
             self.root.after(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1403,6 +1485,7 @@ class DragDropGUI:
             'settings_expanded': self.settings_expanded.get() if hasattr(self, 'settings_expanded') else False,
             'language': self.language.get() if hasattr(self, 'language') else 'Polish',
             'language_code': self.language_code.get() if hasattr(self, 'language_code') else 'pl',
+            'ai_mark_code': self.ai_mark_code.get().strip() if hasattr(self, 'ai_mark_code') else 'ar',
             'extract_audio': self.extract_audio.get() if hasattr(self, 'extract_audio') else False,
             'include_timestamps': self.include_timestamps.get() if hasattr(self, 'include_timestamps') else False,
             'auto_fetch_tmdb': self.auto_fetch_tmdb.get() if hasattr(self, 'auto_fetch_tmdb') else True,
@@ -2063,6 +2146,11 @@ class DragDropGUI:
         merged = srt_merge.parse_merged_name(str(filename))
         if merged:
             return '+'.join(language_label(c) or c.upper() for c in merged)
+        # Files marked as AI translations ('Film.ar.srt' by default) show 'AI', no flag
+        ai_code = self.ai_mark_code.get().strip().lower() if hasattr(self, 'ai_mark_code') else 'ar'
+        stem = Path(str(filename)).stem
+        if ai_code and stem.lower().endswith('.' + ai_code):
+            return 'AI'
         return language_label(detect_language_from_filename(filename))
 
     def _set_row_flag(self, item):

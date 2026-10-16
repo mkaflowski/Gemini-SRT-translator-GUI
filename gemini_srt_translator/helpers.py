@@ -66,6 +66,7 @@ def get_translate_instruction(
   - **Do NOT** alter any fields other than `text`.
   - **Do NOT** add, remove, or reorder any items on the list.
   - **Do NOT** merge text between different items. Original and translation must match.
+- **Context-only lines**: A message may end with lines marked "CONTEXT ONLY" (the subtitles that follow the batch). Use them only to understand sentences that continue past the last item; never translate or return them.
 """
     prompt_parts.append(core_rules)
 

@@ -9,6 +9,10 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
   split <srt> --out-dir DIR         cut a subtitle file into translation batches (batch_001.json ...)
           [--batch-size 100]        at scene breaks (long pauses after a finished sentence),
           [--context 10 --context-after 5]   with read-only context from the neighbouring batches
+          [--force]                 (refuses to overwrite started work without it)
+  status --out-dir DIR              which batches are done / still to translate (for resuming)
+  check --out-dir DIR               find slips in translated batches: copied {xx: ...} lines or
+                                    markers, untranslated or empty lines, >2 lines, broken tags
   apply <srt> --out-dir DIR -o OUT  build the translated SRT from DIR/out_001.json ... (timings from <srt>)
           [--stamp "# Translated by ... #"]
   stamp <srt> --model NAME          add "# Translated by NAME #" as the first subtitle (like the GUI;
@@ -196,7 +200,8 @@ def scene_cuts(cues, size, slack=0.3):
         best_k, best_score = start + size, None
         for k in range(start + lo_k, min(n, start + hi_k + 1)):
             gap = cues[k].start - cues[k - 1].end  # pause before cue k, ms
-            score = gap + (2000 if _ends_sentence(cues[k - 1]) else -3000)
+            # pause length decides; a finished sentence and a size close to the target break ties
+            score = gap + (2000 if _ends_sentence(cues[k - 1]) else -3000) - abs(k - (start + size)) * 10
             if best_score is None or score > best_score:
                 best_k, best_score = k, score
         ranges.append((start, best_k))
@@ -207,7 +212,12 @@ def scene_cuts(cues, size, slack=0.3):
 def cmd_split(args):
     cues = parse_srt(read_text(args.srt))
     os.makedirs(args.out_dir, exist_ok=True)
-    for old in glob.glob(os.path.join(args.out_dir, 'batch_*.json')):
+    done = glob.glob(os.path.join(args.out_dir, 'out_*.json'))
+    if done and not args.force:
+        out({'error': 'work in progress', 'translated_batches': len(done),
+             'hint': 'run "status" to resume, or split again with --force to start over'})
+        return 2
+    for old in glob.glob(os.path.join(args.out_dir, 'batch_*.json')) + done:
         os.remove(old)
 
     def item(i):
@@ -239,6 +249,103 @@ def cmd_split(args):
     with open(os.path.join(args.out_dir, 'manifest.json'), 'w', encoding='utf-8') as fh:
         json.dump(manifest, fh, ensure_ascii=False, indent=1)
     out(manifest)
+
+
+def _load_json(path):
+    with open(path, encoding='utf-8') as fh:
+        return json.load(fh)
+
+
+def _batch_status(out_dir):
+    """[(batch info, state, problem)] for every batch in the manifest."""
+    manifest = _load_json(os.path.join(out_dir, 'manifest.json'))
+    rows = []
+    for info in manifest['batches']:
+        wanted = [i['index'] for i in _load_json(os.path.join(out_dir, info['batch']))['translate']]
+        out_path = os.path.join(out_dir, info['output'])
+        if not os.path.exists(out_path):
+            rows.append((info, 'todo', ''))
+            continue
+        try:
+            got = [str(i.get('index')).strip() for i in _load_json(out_path)]
+        except Exception as e:
+            rows.append((info, 'broken', f'invalid JSON: {e}'))
+            continue
+        missing = [i for i in wanted if i not in got]
+        extra = [i for i in got if i not in wanted]
+        if missing or extra:
+            rows.append((info, 'incomplete', f'missing {missing[:10]} extra {extra[:10]}'))
+        else:
+            rows.append((info, 'done', ''))
+    return manifest, rows
+
+
+def cmd_status(args):
+    manifest, rows = _batch_status(args.out_dir)
+    todo = [r[0]['batch'] for r in rows if r[1] != 'done']
+    out({'source': manifest['source'], 'batches': len(rows),
+         'done': sum(1 for r in rows if r[1] == 'done'),
+         'next': todo[0] if todo else None,
+         'not_done': [{'batch': r[0]['batch'], 'state': r[1], 'problem': r[2]} for r in rows if r[1] != 'done']})
+
+
+# Typical model slips that a final review would not reliably catch
+_REF_LINE_RE = re.compile(r'^\s*\{[a-z]{2,3}:', re.IGNORECASE | re.MULTILINE)
+_MARKER_RE = re.compile(r'BRAK NAPIS', re.IGNORECASE)
+_TAG_RE = re.compile(r'<[^>]+>')
+
+
+def check_items(source, translated, max_len=42):
+    """Problems in translated batch items compared with their source items."""
+    problems = []
+    src_by_index = {i['index']: i['text'] for i in source}
+    for item in translated:
+        idx, text = str(item.get('index')), str(item.get('text', ''))
+        src = src_by_index.get(idx, '')
+        src_main = '\n'.join(l for l in src.split('\n') if not l.lstrip().startswith('{'))
+        found = []
+        if _REF_LINE_RE.search(text):
+            found.append('contains a {xx: ...} reference line')
+        if _MARKER_RE.search(text):
+            found.append('contains the missing-subtitle marker')
+        if not text.strip() and src.strip():
+            found.append('empty translation')
+        plain = _TAG_RE.sub('', text).strip()
+        if len(plain) >= 12 and plain == _TAG_RE.sub('', src_main).strip():
+            found.append('identical to the source (not translated?)')
+        lines = [l for l in text.split('\n') if l.strip()]
+        if len(lines) > 2:
+            found.append(f'{len(lines)} lines (max 2)')
+        too_long = [l for l in lines if len(_TAG_RE.sub('', l)) > max_len + 8]
+        if too_long:
+            found.append(f'line longer than {max_len + 8} chars')
+        for tag in ('i', 'b'):
+            if text.count(f'<{tag}>') != text.count(f'</{tag}>'):
+                found.append(f'unbalanced <{tag}> tag')
+        if found:
+            problems.append({'index': idx, 'problems': found, 'text': text})
+    return problems
+
+
+def cmd_check(args):
+    manifest, rows = _batch_status(args.out_dir)
+    report = []
+    for info, state, problem in rows:
+        if state == 'todo':
+            continue
+        entry = {'batch': info['output']}
+        if problem:
+            entry['problems'] = [problem]
+        if state != 'broken':
+            source = _load_json(os.path.join(args.out_dir, info['batch']))['translate']
+            issues = check_items(source, _load_json(os.path.join(args.out_dir, info['output'])))
+            if issues:
+                entry['items'] = issues
+        if len(entry) > 1:
+            report.append(entry)
+    out({'checked_batches': sum(1 for r in rows if r[1] != 'todo'),
+         'batches_with_problems': len(report), 'report': report})
+    return 0
 
 
 def cmd_apply(args):
@@ -361,7 +468,12 @@ def main():
     p.add_argument('--context', type=int, default=10, help='read-only cues before each batch')
     p.add_argument('--context-after', type=int, default=5, help='read-only cues after each batch')
     p.add_argument('--fixed', action='store_true', help='cut every N cues instead of at scene breaks')
+    p.add_argument('--force', action='store_true', help='start over even if translated batches exist')
     p.set_defaults(func=cmd_split)
+
+    p = sub.add_parser('status'); p.add_argument('--out-dir', required=True); p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser('check'); p.add_argument('--out-dir', required=True); p.set_defaults(func=cmd_check)
 
     p = sub.add_parser('apply'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
     p.add_argument('-o', '--output', required=True); p.add_argument('--stamp', default='')

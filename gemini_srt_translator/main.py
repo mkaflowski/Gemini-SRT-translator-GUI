@@ -161,6 +161,11 @@ class GeminiSRTTranslator:
         self.token_stats = token_stats
         self.token_report = token_report
         self.preserve_context = preserve_context
+        # End batches at scene breaks (long pause after a finished sentence)
+        # instead of exactly every batch_size lines, and show the model the
+        # next few lines as read-only context.
+        self.scene_split = True
+        self.lookahead_lines = 5
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
@@ -817,8 +822,12 @@ class GeminiSRTTranslator:
             server_overload_retries = 0
             max_overload_retries = 3
 
+            batch_end = total
             while i < total or len(batch) > 0:
-                if i < total and len(batch) < self.batch_size:
+                if not batch and i < total:
+                    # Plan where this batch ends: at a scene break, not mid-sentence
+                    batch_end = self._scene_batch_end(original_subtitle, i)
+                if i < total and len(batch) < self.batch_size and i < batch_end:
                     if offset_end - offset < self.audio_chunk_size:
                         subtitle_kwargs = {
                             "index": str(i),
@@ -886,7 +895,13 @@ class GeminiSRTTranslator:
                         self.audio_part = types.Part.from_bytes(data=audio_bytes, mime_type="audio/mp3")
 
                     start_time = time.time()
-                    previous_message = self._process_batch(batch, previous_message, translated_subtitle)
+                    lookahead = [
+                        original_subtitle[k].content
+                        for k in range(i, min(total, i + self.lookahead_lines))
+                    ]
+                    previous_message = self._process_batch(
+                        batch, previous_message, translated_subtitle, lookahead=lookahead
+                    )
                     end_time = time.time()
                     offset = offset_end
 
@@ -1173,6 +1188,7 @@ class GeminiSRTTranslator:
         batch: list[SubtitleObject],
         previous_message: list[Content],
         translated_subtitle: list[Subtitle],
+        lookahead: list[str] | None = None,
     ) -> Content:
         """
         Process a batch of subtitles for translation.
@@ -1181,6 +1197,8 @@ class GeminiSRTTranslator:
             batch (list[SubtitleObject]): Batch of subtitles to translate
             previous_message (Content): Previous message for context
             translated_subtitle (list[Subtitle]): List to store translated subtitles
+            lookahead (list[str]): Text of the subtitles right after the batch,
+                sent as read-only context (not part of the conversation history)
 
         Returns:
             Content: The model's response for context in next batch
@@ -1188,6 +1206,15 @@ class GeminiSRTTranslator:
         client = self._get_client()
         parts = []
         parts.append(types.Part(text=json.dumps(batch, ensure_ascii=False)))
+        if lookahead:
+            parts.append(
+                types.Part(
+                    text="CONTEXT ONLY - the subtitles that come right after this batch. "
+                    "Use them to understand sentences that continue past the last item. "
+                    "Do NOT translate them and do NOT include them in your response:\n"
+                    + json.dumps(lookahead, ensure_ascii=False)
+                )
+            )
         if self.audio_part:
             parts.append(self.audio_part)
 
@@ -1406,6 +1433,34 @@ class GeminiSRTTranslator:
         ]
         batch.clear()
         return previous_content if self.preserve_context else []
+
+    _SENTENCE_END_RE = re.compile(r'[.!?…♪"»)\]]\s*(</[ib]>)?\s*$', re.IGNORECASE)
+
+    def _scene_batch_end(self, subtitles: list[Subtitle], start: int) -> int:
+        """
+        Index (exclusive) where the batch starting at `start` should end.
+
+        Looks at the last 30% of the allowed batch size and cuts where the pause
+        between two subtitles is longest, preferring a cut right after a finished
+        sentence, so a sentence is not split between two requests. Never exceeds
+        batch_size (token limits).
+        """
+        total = len(subtitles)
+        size = self.batch_size
+        if not self.scene_split or total - start <= size:
+            return min(total, start + size)
+        lo = start + max(1, int(size * 0.7))
+        best_k, best_score = start + size, None
+        for k in range(lo, start + size + 1):
+            prev = subtitles[k - 1]
+            gap_ms = (subtitles[k].start - prev.end).total_seconds() * 1000
+            main_lines = [l for l in prev.content.split("\n") if not l.lstrip().startswith("{")]
+            ends_sentence = bool(main_lines) and bool(self._SENTENCE_END_RE.search(main_lines[-1]))
+            # pause length decides; a finished sentence and a size close to the target break ties
+            score = gap_ms + (2000 if ends_sentence else -3000) - (start + size - k) * 10
+            if best_score is None or score > best_score:
+                best_k, best_score = k, score
+        return best_k
 
     @staticmethod
     def _flatten_repaired_json(data) -> list:
