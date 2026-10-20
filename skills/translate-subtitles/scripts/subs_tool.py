@@ -6,6 +6,8 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
   scan <folder>                     videos (+ embedded subtitle tracks), subtitle files and their languages
   extract <video> --tracks 0,2      extract tracks to <video>.<lang>.srt
           [--on-exists error|overwrite|number|skip]
+  clean <srt> -o OUT                remove song lyrics (♪ ... ♪) and hearing-impaired notes ([door slams],
+          [--keep-music --keep-sdh] 'JOHN:' labels), same as the GUI does when merging
   split <srt> --out-dir DIR         cut a subtitle file into translation batches (batch_001.json ...)
           [--batch-size 100]        at scene breaks (long pauses after a finished sentence),
           [--context 10 --context-after 5]   with read-only context from the neighbouring batches
@@ -36,8 +38,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from srt_merge import Cue, format_srt, parse_srt, read_text, parse_merged_name  # noqa: E402
-from srt_fix import fix_cue_lines  # noqa: E402
+from srt_merge import Cue, clean_cues, format_srt, parse_srt, read_text, parse_merged_name  # noqa: E402
+from srt_fix import fix_cue_lines, fix_srt  # noqa: E402
 
 VIDEO_EXT = {'.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm', '.wmv', '.ts'}
 SUB_EXT = {'.srt'}
@@ -429,6 +431,19 @@ def cmd_review_split(args):
          'batches': files, 'merged_source': parse_merged_name(args.source)})
 
 
+def cmd_clean(args):
+    cues = parse_srt(read_text(args.srt))
+    removed_examples = [c.text for c in cues
+                        if not clean_cues([Cue(c.start, c.end, list(c.lines))],
+                                          music=not args.keep_music, sdh=not args.keep_sdh)[0]][:8]
+    cleaned, stats = clean_cues(cues, music=not args.keep_music, sdh=not args.keep_sdh)
+    with open(args.output, 'w', encoding='utf-8', newline='') as fh:
+        fh.write(format_srt(cleaned))
+    out({'output': os.path.abspath(args.output), 'cues_before': len(cues), 'cues_after': len(cleaned),
+         'removed_cues': stats['removed_cues'], 'cleaned_cues': stats['cleaned_cues'],
+         'removed_examples': removed_examples})
+
+
 def cmd_review_apply(args):
     cues = parse_srt(read_text(args.translated))
     with open(args.fixes, encoding='utf-8') as fh:
@@ -449,7 +464,10 @@ def cmd_review_apply(args):
             cues[pos].lines = lines
     with open(args.translated, 'w', encoding='utf-8', newline='') as fh:
         fh.write(format_srt(cues))
-    out({'applied': len(applied), 'changes': applied})
+    # corrections change text lengths, so display times are fixed again afterwards
+    _, fix_stats = fix_srt(args.translated)
+    out({'applied': len(applied), 'changes': applied,
+         'fix': {k: fix_stats.get(k, 0) for k in ('rewrapped', 'extended', 'gaps_fixed')}})
 
 
 def main():
@@ -462,6 +480,10 @@ def main():
     p = sub.add_parser('extract'); p.add_argument('video'); p.add_argument('--tracks', required=True)
     p.add_argument('--on-exists', choices=['error', 'overwrite', 'number', 'skip'], default='error')
     p.set_defaults(func=cmd_extract)
+
+    p = sub.add_parser('clean'); p.add_argument('srt'); p.add_argument('-o', '--output', required=True)
+    p.add_argument('--keep-music', action='store_true'); p.add_argument('--keep-sdh', action='store_true')
+    p.set_defaults(func=cmd_clean)
 
     p = sub.add_parser('split'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
     p.add_argument('--batch-size', type=int, default=100)
