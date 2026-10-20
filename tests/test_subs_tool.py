@@ -96,3 +96,26 @@ def test_skill_copies_match_app_modules():
         with open(os.path.join(ROOT, "gst_gui", "utils", name), encoding="utf-8") as a, \
                 open(os.path.join(SKILL_SCRIPTS, name), encoding="utf-8") as b:
             assert a.read() == b.read(), f"{name} differs - copy gst_gui/utils/{name} to the skill"
+
+
+def test_clean_removes_songs_and_sdh(tmp_path):
+    src = tmp_path / "Film.en.srt"
+    src.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n♪ I get lost in your eyes ♪\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n[door slams]\nJOHN: Who's there?\n\n"
+        "3\n00:00:05,000 --> 00:00:06,000\nNobody.\n\n", encoding="utf-8")
+    out = tmp_path / "source.srt"
+    rc, res = run("clean", str(src), "-o", str(out))
+    assert rc == 0 and res["removed_cues"] == 1 and res["cues_after"] == 2
+    text = out.read_text(encoding="utf-8")
+    assert "♪" not in text and "[door slams]" not in text and "JOHN:" not in text
+    assert "Who's there?" in text and "Nobody." in text
+
+
+def test_review_apply_fixes_timing_again(work):
+    src, w = work
+    fixes = w.parent / "fixes.json"
+    fixes.write_text(json.dumps([{"index": "1", "text": "A much longer corrected subtitle that needs more time"}]),
+                     encoding="utf-8")
+    rc, res = run("review-apply", str(src), str(fixes))
+    assert rc == 0 and res["applied"] == 1 and "fix" in res
