@@ -287,8 +287,12 @@ class CLIRunner:
 
         return success
 
-    def fix_subtitle_file(self, subtitle_file):
-        """Fix line breaks and display times in place. Never fails the translation."""
+    def fix_subtitle_file(self, subtitle_file, source_file=None):
+        """Fix line breaks and display times in place. Never fails the translation.
+
+        source_file (the subtitles the translation was made from) resolves
+        doubtful dialogue dashes.
+        """
         try:
             from gst_gui.utils import srt_fix
         except ImportError:
@@ -296,7 +300,8 @@ class CLIRunner:
             return None
 
         try:
-            _, stats = srt_fix.fix_srt(str(subtitle_file))
+            _, stats = srt_fix.fix_srt(str(subtitle_file),
+                                       source_path=str(source_file) if source_file else None)
         except Exception as e:
             self.log(f"⚠️ Could not fix subtitles: {e}")
             return None
@@ -307,7 +312,8 @@ class CLIRunner:
             f"(too long: {stats['too_long_before']} → {stats['too_long_after']}), "
             f"{stats.get('extended', 0)} timings extended, "
             f"{stats.get('gaps_fixed', 0)} gaps fixed, "
-            f"{stats.get('dashes_removed', 0)} lone dialogue dashes removed, "
+            f"{stats.get('dashes_removed', 0) + stats.get('dashes_from_source', 0)} lone dialogue dashes removed"
+            f"{' (' + str(stats['dashes_from_source']) + ' using the source subtitles)' if stats.get('dashes_from_source') else ''}, "
             f"{stats.get('slashes_fixed', 0)} ' / ' line breaks fixed, "
             f"{stats.get('em_dashes', 0)} long dashes (— –) replaced")
         dash_problems = [p for p in stats.get('problems', []) if 'myślnikiem' in p or 'dwie kwestie' in p]
