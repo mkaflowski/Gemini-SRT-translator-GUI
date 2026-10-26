@@ -306,7 +306,14 @@ class CLIRunner:
             f"{stats['rewrapped']} lines re-wrapped "
             f"(too long: {stats['too_long_before']} → {stats['too_long_after']}), "
             f"{stats.get('extended', 0)} timings extended, "
-            f"{stats.get('gaps_fixed', 0)} gaps fixed")
+            f"{stats.get('gaps_fixed', 0)} gaps fixed, "
+            f"{stats.get('dashes_removed', 0)} lone dialogue dashes removed")
+        dash_problems = [p for p in stats.get('problems', []) if 'myślnikiem' in p or 'dwie kwestie' in p]
+        if dash_problems:
+            self.log(f"✨ {len(dash_problems)} subtitles have a doubtful dialogue dash "
+                     f"- check them by hand:")
+            for problem in dash_problems[:10]:
+                self.log(f"   • {problem.split(': ', 1)[-1]}")
         if stats.get('still_short'):
             self.log(f"✨ {stats['still_short']} subtitles stay too short - "
                      f"no room between neighbours")

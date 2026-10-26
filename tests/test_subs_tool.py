@@ -162,3 +162,28 @@ def test_clean_drops_decoration_only_lines():
     assert clean_lines(["•"]) == []
     assert clean_lines(["- Hi.", "-"]) == ["- Hi."]
     assert clean_lines(["Hello"]) == ["Hello"]
+
+
+def test_fix_removes_lone_dialogue_dash():
+    from srt_fix import fix_lone_dash
+    assert fix_lone_dash(["- Whoa."]) == (["Whoa."], None)
+    assert fix_lone_dash(["<i>- Hej</i>"]) == (["<i>Hej</i>"], None)
+    assert fix_lone_dash(["-15 stopni."]) == (["-15 stopni."], None)      # a minus, not a dash
+    assert fix_lone_dash(["- Tak.", "- Nie."]) == (["- Tak.", "- Nie."], None)
+    # the sentence goes on after the comma: one speaker
+    assert fix_lone_dash(["- Idę do domu,", "bo jestem zmęczony."]) == (["Idę do domu,", "bo jestem zmęczony."], None)
+    lines, problem = fix_lone_dash(["- Cześć. - Pa."])
+    assert lines == ["- Cześć. - Pa."] and problem                          # two speakers in one line
+
+
+def test_fix_dialogue_dash_two_lines():
+    from srt_fix import fix_lone_dash
+    # the sentence continues on line 2: one speaker, the dash goes
+    assert fix_lone_dash(["- Greg wydawał się uczciwym", "mechanikiem,"]) == \
+        (["Greg wydawał się uczciwym", "mechanikiem,"], None)
+    # dash only on line 2: two speakers, line 1 gets its dash too
+    assert fix_lone_dash(["Nie?", "- Nie."]) == (["- Nie?", "- Nie."], None)
+    assert fix_lone_dash(["<i>Nie?</i>", "- Nie."]) == (["<i>- Nie?</i>", "- Nie."], None)
+    # finished sentence + capital letter: can't tell, reported only
+    lines, problem = fix_lone_dash(["- Smakuje mi.", "Trochę słone."])
+    assert lines == ["- Smakuje mi.", "Trochę słone."] and problem

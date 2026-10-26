@@ -366,11 +366,64 @@ def fix_cue_lines(lines: Sequence[str], max_len: int = MAX_LEN) -> tuple[list[st
     return result, problems
 
 
+# myślnik dialogowy na początku linii (po ewentualnych tagach), ale nie minus przed liczbą
+_LEADING_DASH_RE = re.compile(r"^((?:\s*<[^>]+>)*)\s*[-–—](?!\d)\s*")
+
+
+def _starts_with_dash(line: str) -> bool:
+    return TAG_RE.sub("", line).lstrip().startswith(DASH_START)
+
+
+def fix_lone_dash(lines: Sequence[str]) -> tuple[list[str], str | None]:
+    """Myślnik dialogowy oznacza dwie osoby w jednym napisie.
+
+    Napis z jedną linią zaczynającą się od myślnika to kwestia jednej osoby —
+    myślnik jest usuwany („- Whoa.” -> „Whoa.”).  Tak samo, gdy myślnik ma tylko
+    pierwsza z dwóch linii, a zdanie przechodzi do drugiej (pierwsza nie kończy
+    zdania albo druga zaczyna się małą literą).  Pozostałe napisy z jednym
+    myślnikiem na dwie linie są niejednoznaczne (brakujący drugi myślnik albo
+    zbędny pierwszy), więc zostają bez zmian i trafiają do raportu.
+    """
+    lines = list(lines)
+    dashed = [i for i, line in enumerate(lines) if _starts_with_dash(line)]
+    if len(lines) == 1 and dashed:
+        plain = TAG_RE.sub("", lines[0])
+        if re.search(r"[.!?…]\s+[-–—]\s*\S", plain):
+            # „- Cześć. - Pa.” — dwie kwestie w jednej linii, nie ruszamy
+            return lines, f"dwie kwestie w jednej linii: {plain[:80]}"
+        new = _LEADING_DASH_RE.sub(r"\1", lines[0], count=1)
+        if TAG_RE.sub("", new).strip():
+            return [new], None
+    if len(lines) == 2 and dashed == [0]:
+        first = TAG_RE.sub("", lines[0]).rstrip()
+        second = TAG_RE.sub("", lines[1]).lstrip()
+        # zdanie przechodzi do drugiej linii — to jedna osoba, myślnik jest zbędny
+        # („- Greg wydawał się uczciwym / mechanikiem,”)
+        if not first.endswith(tuple(".!?…♪\"”»")) or (second[:1].isalpha() and second[:1].islower()):
+            return [_LEADING_DASH_RE.sub(r"\1", lines[0], count=1), lines[1]], None
+    if len(lines) == 2 and dashed == [1]:
+        # „Nie? / - Nie.” — druga linia to kwestia drugiej osoby; po polsku obie
+        # kwestie dialogu zaczynają się od myślnika (styl closed captions z USA
+        # oznacza myślnikiem tylko zmianę mówiącego)
+        m = re.match(r"^((?:\s*<[^>]+>)*)\s*", lines[0])
+        return [f"{m.group(1)}- {lines[0][m.end():]}", lines[1]], None
+    if len(lines) >= 2 and len(dashed) == 1:
+        return lines, f"tylko jedna linia z myślnikiem dialogowym: {' / '.join(TAG_RE.sub('', l) for l in lines)[:80]}"
+    return lines, None
+
+
 def fix_cues(cues: list[Cue], max_len: int = MAX_LEN, max_lines: int = MAX_LINES):
     """Popraw wszystkie napisy; zwraca (napisy, statystyki)."""
     stats = {"cues": len(cues), "rewrapped": 0, "too_long_before": 0,
-             "too_long_after": 0, "too_many_lines": 0, "problems": []}
+             "too_long_after": 0, "too_many_lines": 0, "dashes_removed": 0, "problems": []}
     for cue in cues:
+        # najpierw myślnik: przy łamaniu jedna kwestia z myślnikiem byłaby dalej „dialogiem”
+        undashed, dash_problem = fix_lone_dash(cue.lines)
+        if undashed != cue.lines:
+            stats["dashes_removed"] += 1
+            cue.lines = undashed
+        if dash_problem:
+            stats["problems"].append(dash_problem)
         before = list(cue.lines)
         stats["too_long_before"] += sum(1 for l in before if visible_len(l) > max_len)
         new_lines, problems = fix_cue_lines(before, max_len)
@@ -593,7 +646,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(f"\n[fix] zapisano: {out_path}", file=sys.stderr)
 
     print(f"[fix] napisów: {stats['cues']}, przełamanych: {stats['rewrapped']}, "
-          f"za długich linii: {stats['too_long_before']} → {stats['too_long_after']}",
+          f"za długich linii: {stats['too_long_before']} → {stats['too_long_after']}, "
+          f"usuniętych pojedynczych myślników: {stats['dashes_removed']}",
           file=sys.stderr)
     if "short_before" in stats:
         print(f"[fix] czasy: za krótkich {stats['short_before']} → "
