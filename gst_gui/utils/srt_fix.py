@@ -379,12 +379,13 @@ _SLASH_BREAK_RE = re.compile(r"\s+/\s+|\s+/(?=[-–—])")
 _SLASH_EDGE_RE = re.compile(r"^\s*/\s+|\s+/\s*$")
 
 
-_EM_DASH_START_RE = re.compile(r"^((?:\s*<[^>]+>)*)\s*—\s*")
+_EM_DASH_START_RE = re.compile(r"^((?:\s*<[^>]+>)*)\s*[—–]\s*")
 
 
 def replace_em_dashes(lines: Sequence[str]) -> list[str]:
-    """Długi myślnik „—” -> zwykły „-” (na początku linii jako „- ” dialogu)."""
-    return [_EM_DASH_START_RE.sub(r"\1- ", line, count=1).replace("—", "-") for line in lines]
+    """Pauza „—” i półpauza „–” -> zwykły „-” (na początku linii jako „- ” dialogu)."""
+    return [_EM_DASH_START_RE.sub(r"\1- ", line, count=1).replace("—", "-").replace("–", "-")
+            for line in lines]
 
 
 def has_slash_break(line: str) -> bool:
@@ -716,7 +717,7 @@ def main(argv: Iterable[str] | None = None) -> int:
           f"za długich linii: {stats['too_long_before']} → {stats['too_long_after']}, "
           f"usuniętych pojedynczych myślników: {stats['dashes_removed']}, "
           f"poprawionych „ / ”: {stats['slashes_fixed']}, "
-          f"zamienionych „—”: {stats['em_dashes']}",
+          f"zamienionych „—”/„–” na „-”: {stats['em_dashes']}",
           file=sys.stderr)
     if "short_before" in stats:
         print(f"[fix] czasy: za krótkich {stats['short_before']} → "
