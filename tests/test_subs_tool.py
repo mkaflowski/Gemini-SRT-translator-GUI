@@ -227,6 +227,9 @@ def test_fix_srt_handles_slashes_end_to_end(tmp_path):
     (["Jak to mam—"], ["Jak to mam-"]),
     (["Wiesz — to nie tak."], ["Wiesz - to nie tak."]),
     (["Bez myślników."], ["Bez myślników."]),
+    (["Nie wiem – czy to w porządku?"], ["Nie wiem - czy to w porządku?"]),
+    (["„Zbiłeś – kupiłeś”"], ["„Zbiłeś - kupiłeś”"]),
+    (["– Tak.", "– Nie."], ["- Tak.", "- Nie."]),
 ])
 def test_replace_em_dashes(before, after):
     from srt_fix import replace_em_dashes
@@ -238,4 +241,4 @@ def test_check_flags_slashes_and_em_dashes():
     src = [{"index": "1", "text": "Cool. / - Heard anything?"}, {"index": "2", "text": "Wait—"}]
     out = [{"index": "1", "text": "Fajnie. / - Słyszałeś?"}, {"index": "2", "text": "Czekaj—"}]
     problems = {p["index"]: " ".join(p["problems"]) for p in check_items(src, out)}
-    assert '" / "' in problems["1"] and "em dash" in problems["2"]
+    assert '" / "' in problems["1"] and "long dash" in problems["2"]

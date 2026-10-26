@@ -321,8 +321,8 @@ def check_items(source, translated, max_len=42):
             found.append('contains the missing-subtitle marker')
         if any(has_slash_break(l) for l in text.split('\n')):
             found.append('uses " / " as a line break (use a real line break "\\n")')
-        if '—' in text:
-            found.append('uses an em dash "—" (use "-")')
+        if '—' in text or '–' in text:
+            found.append('uses a long dash "—" or "–" (use "-")')
         if not text.strip() and src.strip():
             found.append('empty translation')
         plain = _TAG_RE.sub('', text).strip()
