@@ -307,7 +307,9 @@ class CLIRunner:
             f"(too long: {stats['too_long_before']} → {stats['too_long_after']}), "
             f"{stats.get('extended', 0)} timings extended, "
             f"{stats.get('gaps_fixed', 0)} gaps fixed, "
-            f"{stats.get('dashes_removed', 0)} lone dialogue dashes removed")
+            f"{stats.get('dashes_removed', 0)} lone dialogue dashes removed, "
+            f"{stats.get('slashes_fixed', 0)} ' / ' line breaks fixed, "
+            f"{stats.get('em_dashes', 0)} em dashes replaced")
         dash_problems = [p for p in stats.get('problems', []) if 'myślnikiem' in p or 'dwie kwestie' in p]
         if dash_problems:
             self.log(f"✨ {len(dash_problems)} subtitles have a doubtful dialogue dash "

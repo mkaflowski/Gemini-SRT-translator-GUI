@@ -194,3 +194,48 @@ def test_fix_dash_never_leaves_an_empty_line():
     # an empty line would end the SRT block and lose the text
     assert fix_lone_dash(["-", "I choć wciąż się do tego przyzwyczajałem,"]) == \
         (["I choć wciąż się do tego przyzwyczajałem,"], None)
+
+
+@pytest.mark.parametrize("before, after", [
+    (["Fajnie. / - Słyszałeś... cokolwiek?"], ["- Fajnie.", "- Słyszałeś... cokolwiek?"]),
+    (["- Rozumiem. / - Tak."], ["- Rozumiem.", "- Tak."]),
+    (["- Rozumiem. / -", "Więc jakiekolwiek macie opcje,"], ["- Rozumiem.", "- Więc jakiekolwiek macie opcje,"]),
+    (["- Dobra, trzymaj się,", "stary. / - Trzymaj się."], ["- Dobra, trzymaj się, stary.", "- Trzymaj się."]),
+    (["- Kto idzie pierwszy? /", "- Mogę pójść pierwszy."], ["- Kto idzie pierwszy?", "- Mogę pójść pierwszy."]),
+    (["Warto wiedzieć.", "/ - Tak."], ["- Warto wiedzieć.", "- Tak."]),
+    (["Idę do domu, / bo jestem zmęczony."], ["Idę do domu, bo jestem zmęczony."]),
+    (["Otwarte 24/7, 50 km/h."], ["Otwarte 24/7, 50 km/h."]),       # real slashes stay
+    (["I/O i and/or"], ["I/O i and/or"]),
+])
+def test_fix_slash_breaks(before, after):
+    from srt_fix import fix_slash_breaks
+    assert fix_slash_breaks(before) == after
+
+
+def test_fix_srt_handles_slashes_end_to_end(tmp_path):
+    from srt_fix import fix_srt
+    path = tmp_path / "Film.pl.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:04,000\nFajnie. / - Słyszałeś... cokolwiek?\n\n", encoding="utf-8")
+    _, stats = fix_srt(str(path))
+    assert stats["slashes_fixed"] == 1
+    assert "- Fajnie.\n- Słyszałeś... cokolwiek?" in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("before, after", [
+    (["—Tak.", "—Nie."], ["- Tak.", "- Nie."]),
+    (["<i>— Tak.</i>", "— Nie."], ["<i>- Tak.</i>", "- Nie."]),
+    (["Jak to mam—"], ["Jak to mam-"]),
+    (["Wiesz — to nie tak."], ["Wiesz - to nie tak."]),
+    (["Bez myślników."], ["Bez myślników."]),
+])
+def test_replace_em_dashes(before, after):
+    from srt_fix import replace_em_dashes
+    assert replace_em_dashes(before) == after
+
+
+def test_check_flags_slashes_and_em_dashes():
+    from subs_tool import check_items
+    src = [{"index": "1", "text": "Cool. / - Heard anything?"}, {"index": "2", "text": "Wait—"}]
+    out = [{"index": "1", "text": "Fajnie. / - Słyszałeś?"}, {"index": "2", "text": "Czekaj—"}]
+    problems = {p["index"]: " ".join(p["problems"]) for p in check_items(src, out)}
+    assert '" / "' in problems["1"] and "em dash" in problems["2"]
