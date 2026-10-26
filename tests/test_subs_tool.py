@@ -154,3 +154,11 @@ def test_frames_grid_in_one_image(tmp_path):
                   "--out-dir", str(tmp_path / "g"), "--no-text")
     assert res["frames"][0]["subtitles_drawn"] is False
     assert _jpeg_size(res["frames"][0]["image"]) == (3 * 426, 240)
+
+
+def test_clean_drops_decoration_only_lines():
+    from srt_merge import clean_lines
+    assert clean_lines(["* * *"]) == []
+    assert clean_lines(["•"]) == []
+    assert clean_lines(["- Hi.", "-"]) == ["- Hi."]
+    assert clean_lines(["Hello"]) == ["Hello"]

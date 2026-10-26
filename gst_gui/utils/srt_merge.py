@@ -283,7 +283,7 @@ def _remove_spans(text: str, opener: str, closer: str) -> str:
 
 def _is_blank(line: str) -> bool:
     """Czy po wycięciu zostały same śmieci (myślnik, kropki, tagi)?"""
-    return _TAG_RE.sub("", line).strip(" \t-–—.…\"'«»¿?!,:;") == ""
+    return _TAG_RE.sub("", line).strip(" \t-–—.…\"'«»¿?!,:;*•") == ""
 
 
 def _strip_speaker(line: str) -> str:
@@ -312,6 +312,8 @@ def clean_lines(lines: Sequence[str], music: bool = True, sdh: bool = True) -> l
 
     result: list[str] = []
     for old, new in zip(original, text.split("\n")):
+        if _is_blank(new):
+            continue
         if music:
             new = _MUSIC_SPAN_RE.sub("", new)
             if _MUSIC_ANY_RE.search(new):
