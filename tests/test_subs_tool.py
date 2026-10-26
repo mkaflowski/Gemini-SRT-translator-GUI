@@ -187,3 +187,10 @@ def test_fix_dialogue_dash_two_lines():
     # finished sentence + capital letter: can't tell, reported only
     lines, problem = fix_lone_dash(["- Smakuje mi.", "Trochę słone."])
     assert lines == ["- Smakuje mi.", "Trochę słone."] and problem
+
+
+def test_fix_dash_never_leaves_an_empty_line():
+    from srt_fix import fix_lone_dash
+    # an empty line would end the SRT block and lose the text
+    assert fix_lone_dash(["-", "I choć wciąż się do tego przyzwyczajałem,"]) == \
+        (["I choć wciąż się do tego przyzwyczajałem,"], None)
