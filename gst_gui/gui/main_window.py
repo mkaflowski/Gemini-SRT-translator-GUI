@@ -1235,7 +1235,7 @@ class DragDropGUI:
                 f"Translation finished.\n\nRun \"Fix subs\" on the translated files?\n{names}\n\n"
                 "Re-wraps too long lines and fixes display times."):
             for p in outputs:
-                self.cli_runner.fix_subtitle_file(p['output'])
+                self.cli_runner.fix_subtitle_file(p['output'], p.get('subtitle'))
             self.status_var.set(f"Fix subs done ({len(outputs)} files)")
 
         reviewable = [p for p in outputs if p.get('subtitle') and Path(p['subtitle']).exists()]

@@ -242,3 +242,20 @@ def test_check_flags_slashes_and_em_dashes():
     out = [{"index": "1", "text": "Fajnie. / - Słyszałeś?"}, {"index": "2", "text": "Czekaj—"}]
     problems = {p["index"]: " ".join(p["problems"]) for p in check_items(src, out)}
     assert '" / "' in problems["1"] and "long dash" in problems["2"]
+
+
+def test_fix_srt_resolves_doubtful_dashes_with_source(tmp_path):
+    from srt_fix import fix_srt
+    pl = tmp_path / "Film.pl.srt"
+    en = tmp_path / "Film.en.srt"
+    pl.write_text("1\n00:00:01,000 --> 00:00:04,000\n- Smakuje mi.\nTrochę słone.\n\n"
+                  "2\n00:00:05,000 --> 00:00:08,000\n- Dobra.\nTo będzie 87 dolarów.\n\n", encoding="utf-8")
+    en.write_text("1\n00:00:01,000 --> 00:00:04,000\n- I LIKE IT.\nYEAH, A LITTLE SALTY.\n\n"
+                  "2\n00:00:05,000 --> 00:00:08,000\n- OKAY.\n- THAT'LL BE $87.\n\n", encoding="utf-8")
+    _, stats = fix_srt(str(pl), timing=False)
+    assert stats["dashes_from_source"] == 0                     # without a source: only reported
+    _, stats = fix_srt(str(pl), timing=False, source_path=str(en))
+    assert stats["dashes_from_source"] == 1
+    text = pl.read_text(encoding="utf-8")
+    assert "Smakuje mi.\nTrochę słone." in text and "- Smakuje" not in text   # one speaker: dash gone
+    assert "- Dobra.\nTo będzie 87 dolarów." in text                           # speaker change: left as is

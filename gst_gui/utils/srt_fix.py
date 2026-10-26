@@ -633,15 +633,54 @@ def _write_atomic(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
+def resolve_dashes_with_source(cues: list[Cue], source: list[Cue]) -> int:
+    """Rozstrzygnij niejasne myślniki („- Smakuje mi. / Trochę słone.”) według źródła.
+
+    W napisach źródłowych w stylu closed captions myślnik na początku linii
+    oznacza zmianę mówiącego.  Gdy w źródłowych napisach, które zaczynają się
+    w trakcie danego napisu, nie ma nowego myślnika poza pierwszą linią, mówi
+    jedna osoba — zbędny myślnik jest usuwany.  Gdy jest (dwie osoby albo
+    przesunięte napisy), napis zostaje bez zmian: tu łatwo o pomyłkę.
+    Zwraca liczbę poprawionych napisów.
+    """
+    resolved = 0
+    for cue in cues:
+        lines = cue.lines
+        if not (len(lines) == 2 and _starts_with_dash(lines[0]) and not _starts_with_dash(lines[1])):
+            continue
+        if not fix_lone_dash(lines)[1]:
+            continue
+        src_lines = [l for s in source if cue.start - 250 <= s.start < cue.end - 250
+                     for l in s.lines if not l.lstrip().startswith("{")]
+        if not src_lines or any(_starts_with_dash(l) for l in src_lines[1:]):
+            continue
+        cue.lines = [_LEADING_DASH_RE.sub(r"\1", lines[0], count=1), lines[1]]
+        resolved += 1
+    return resolved
+
+
 def fix_srt(path: str, out_path: str | None = None, max_len: int = MAX_LEN,
             newline: str = "\n", timing: bool = True, cps: float = CPS,
             min_duration: int = MIN_DURATION, max_duration: int = MAX_DURATION,
-            min_gap: int = MIN_GAP, merge_close: bool = False) -> tuple[str, dict]:
-    """Popraw plik SRT — domyślnie w miejscu, nadpisując plik wejściowy."""
+            min_gap: int = MIN_GAP, merge_close: bool = False,
+            source_path: str | None = None) -> tuple[str, dict]:
+    """Popraw plik SRT — domyślnie w miejscu, nadpisując plik wejściowy.
+
+    ``source_path`` (napisy, z których tłumaczono) pozwala rozstrzygnąć
+    niejasne myślniki dialogowe — patrz ``resolve_dashes_with_source``.
+    """
     cues = parse_srt(read_text(path))
     if out_path is None:
         out_path = path
     cues, stats = fix_cues(cues, max_len)
+    stats["dashes_from_source"] = 0
+    if source_path and os.path.exists(source_path):
+        # przed czasami — korekta czasów może przesunąć początek napisu
+        stats["dashes_from_source"] = resolve_dashes_with_source(cues, parse_srt(read_text(source_path)))
+        if stats["dashes_from_source"]:
+            stats["problems"] = [p for p in stats["problems"] if not p.startswith("tylko jedna linia")]
+            stats["problems"] += [p for p in (fix_lone_dash(c.lines)[1] for c in cues)
+                                  if p and p.startswith("tylko jedna linia")]
     if timing:
         # najpierw łamanie linii, potem czasy - liczba znaków się nie zmienia,
         # ale scalanie napisów korzysta z gotowego łamania
@@ -682,6 +721,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--merge-close", action="store_true",
                     help="scalaj za krótki napis z następnym, gdy dzieli je mniej niż 0,5 s")
     ap.add_argument("--crlf", action="store_true", help="zapisz z końcami linii CRLF")
+    ap.add_argument("--source", help="napisy, z których tłumaczono — rozstrzygają niejasne "
+                                     "myślniki dialogowe (styl closed captions)")
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     if args.show or args.check:
@@ -707,6 +748,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         max_duration=args.max_duration,
         min_gap=args.min_gap,
         merge_close=args.merge_close,
+        source_path=args.source,
     )
     if args.output == "-" and not args.check:
         sys.stdout.write(stats["text"])
@@ -717,7 +759,8 @@ def main(argv: Iterable[str] | None = None) -> int:
           f"za długich linii: {stats['too_long_before']} → {stats['too_long_after']}, "
           f"usuniętych pojedynczych myślników: {stats['dashes_removed']}, "
           f"poprawionych „ / ”: {stats['slashes_fixed']}, "
-          f"zamienionych „—”/„–” na „-”: {stats['em_dashes']}",
+          f"zamienionych „—”/„–” na „-”: {stats['em_dashes']}, "
+          f"myślników rozstrzygniętych według źródła: {stats['dashes_from_source']}",
           file=sys.stderr)
     if "short_before" in stats:
         print(f"[fix] czasy: za krótkich {stats['short_before']} → "

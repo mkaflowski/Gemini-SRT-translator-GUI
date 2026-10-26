@@ -189,11 +189,13 @@ Without a video file in the folder, skip this and rely on the movie description 
 
 ## Step 8: Fix subs
 
-Run it on the translated file (it rewraps lines that are too long and fixes display times):
+Run it on the translated file (it rewraps lines that are too long, fixes display times and dialogue dashes):
 
 ```
-python "$S/srt_fix.py" "<output.srt>"
+python "$S/srt_fix.py" "<output.srt>" --source "<source.srt>"
 ```
+
+`--source` is the file you translated from. Some source subtitles (US closed captions) put a dash at the start of every change of speaker, even for one person, and the translation tends to copy it. Fix subs removes such dashes by the Polish convention, and with `--source` it also settles the doubtful ones ("- Smakuje mi. / Trochę słone.") by checking whether the speaker changes in the source.
 
 > [!NOTE]
 > If the user requested to keep/preserve timings ("nie ruszaj czasów", "zachowaj czasy"), pass `--no-timing`:
