@@ -5,10 +5,19 @@ description: Translate a movie's or episode's subtitles (SRT) the way Gemini SRT
 
 # Translating movie subtitles
 
-This skill does what the Gemini SRT Translator GUI does, but **you translate** (not the Gemini API).
+This skill does what the Gemini SRT Translator GUI does, but **you translate** (not an external API).
+
+> [!IMPORTANT]
+> **Strictly do NOT use external API calls or environment variables** (e.g. `google-genai`, `openai`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`).
+> - External API keys have strict rate limits (e.g. 20 req/day on AI Studio Free Tier) and often fail or fall back to inferior models.
+> - The user has an ample model allowance in Antigravity.
+> - All translations must be generated directly by you (the assistant model) within the chat session or delegated to subagents, using file-writing tools to save `out_NNN.json`.
+>
+> **Preserving timings:** If the user specifies not to change or touch timings ("nie ruszaj czasów", "zachowaj czasy", manually synced subtitles), pass `--no-timing` to `srt_fix.py` (Step 8) and `subs_tool.py review-apply --no-timing` (Step 9).
+
 Scripts are in `scripts/` next to this file (Python 3.9+, no extra packages; `ffmpeg`/`ffprobe` only for subtitles embedded in the video).
 
-- `scripts/subs_tool.py`: scan, extract, split into batches, resume (`status`), check the batches (`check`), build the SRT, add the translator info, prepare and apply the review
+- `scripts/subs_tool.py`: scan, extract, clean, split into batches, frames from the video for unclear lines, resume (`status`), check the batches (`check`), build the SRT, add the translator info, prepare and apply the review
 - `scripts/srt_merge.py`: merge two subtitle files into one bilingual file (copy from the GUI)
 - `scripts/srt_fix.py`: "Fix subs", which rewraps lines and fixes display times (copy from the GUI)
 
@@ -16,7 +25,17 @@ Below, `$S` means the absolute path to the `scripts/` folder of this skill. Run 
 
 **Asking the user.** Ask one thing at a time and always show the default. In Claude Code use the question tool (AskUserQuestion) with the default as the first option. In other tools (OpenCode, Antigravity) ask in chat and wait for the answer. Talk to the user in their language.
 
-**The workflow always ends with step 10**: asking whether to change the language code in the file name to `ar` (the user's mark for AI translations). Never finish without asking it.
+**Using defaults / Full auto:** When the user instructs to use default/recommended options ("użyj domyślnych ustawień / opcji", "defaults", "full auto"):
+- Apply all recommended defaults automatically without asking each step.
+- **Always complete the full post-processing pipeline:** never stop after just writing batches. You must always run `subs_tool.py check`, assemble with `subs_tool.py apply`, add the translator stamp (`subs_tool.py stamp`), and run Fix subs (`srt_fix.py`).
+- If the user specifically instructs to keep `.pl` or skip renaming to `ar` (e.g. "pomiń zmianę arr na pl", "zostaw .pl.srt"), keep `.pl.srt`.
+- Otherwise, at the end (Step 10 / End), rename `.pl.srt` to `.ar.srt`.
+- Automatically clean up (delete) the working directory `$W` when each episode is finished.
+
+**Series / multi-episode seasons:** When processing multiple episodes:
+- Process episode by episode sequentially.
+- Keep the shared glossary in `<folder>/.translate_work/glossary.md` across episodes.
+- You can invoke subagents for batch translation to preserve context window.
 
 ## Step 1: Movie folder
 
@@ -109,7 +128,14 @@ Tell the user how many batches are done and ask whether to **continue** (default
    python "$S/subs_tool.py" check --out-dir "$W"
    ```
 
-   It reports, for each batch, copied `{xx: ...}` reference lines or the missing-subtitle marker, empty or untranslated (identical to the source) lines, more than 2 lines, lines far over the length limit, unbalanced `<i>`/`<b>` tags, and missing or extra indexes. Fix the reported items in the `out_NNN.json` files and run `check` again until it reports no problems. Items that are fine as they are (a name, "OK") can be left as they are.
+   It reports, for each batch:
+   - Copied `{xx: ...}` reference lines or the missing-subtitle marker.
+   - Empty or untranslated (identical to the source) lines.
+   - More than 2 lines, or lines far over the length limit.
+   - Unbalanced `<i>`/`<b>` tags.
+   - Missing or extra indexes.
+
+   Fix any reported items in the `out_NNN.json` files and run `check` again until clean.
 6. Build the file (the timings come from the source):
 
    ```
@@ -117,7 +143,7 @@ Tell the user how many batches are done and ask whether to **continue** (default
    ```
 
    If it reports `missing translations`, translate the listed `index` values (add them to the right `out_NNN.json`) and run it again.
-7. **Always** add the translator info as the first subtitle, like the GUI does (`# Translated by <model> #`). Use the name of the model that is actually doing the translation, i.e. you (e.g. `Claude Opus 5.5`, `Gemini 3 Pro`), not the name of the tool:
+7. **Always** add the translator info as the first subtitle, like the GUI does (`# Translated by <model> #`). Use the name of the model that is actually doing the translation, i.e. you (e.g. `Gemini 3.8 Flash`, `Gemini 3 Pro`, `Claude Opus 5.5`), not the name of the tool:
 
    ```
    python "$S/subs_tool.py" stamp "<output.srt>" --model "<your model name>"
@@ -126,6 +152,27 @@ Tell the user how many batches are done and ask whether to **continue** (default
    Running it again replaces the existing info, so the file never has two.
 
 Report progress after each batch (e.g. "batch 3/7 done"). If your context is getting full, say so: the user can continue in a new session and the skill will resume from `status`.
+
+### Unclear lines: look at the video
+
+When the text alone does not tell you something the translation needs, look at that moment of the video. Typical cases:
+- the gender of the speaker or of the person addressed ("You're tired" → "zmęczony" or "zmęczona"),
+- who is speaking to whom, and whether it is formal or informal address,
+- whether "you" means one person or several,
+- text visible on screen that the subtitle refers to (an SMS, a sign, a letter).
+
+```
+python "$S/subs_tool.py" frames "<source.srt>" "<video>" --index 214,388 --out-dir "$W/frames"
+```
+
+`--index` takes the subtitle numbers (the `index` values from the batch). For each subtitle you get **one** small image: a 3×2 grid of frames, each labelled in its top-left corner with its offset from the subtitle: **-5s, 0, +5s** in the top row and **+10s, +20s, +60s** in the bottom row. The subtitle shown at each moment is drawn at the bottom of its frame, so you can see which line is said in which shot. Open the image with your image/file-reading tool. Frames far from the moment (+20s, +60s) may already be another shot or scene: use them for who is around, not for who said the line. `--offsets=-2,0,2` (with `=`, because of the leading minus) picks other moments, `--no-text` leaves the frames without subtitles.
+
+One image costs about as much as 60 subtitle lines, so:
+- use it only when you are really unsure, not for every line: at most about **20 images per film** (more only if the user agrees),
+- ask for several indexes in one call,
+- write what you learned into the glossary ("Cody = man, 30s; Cody uses informal address with the judge"), so the same question doesn't come up again.
+
+Without a video file in the folder, skip this and rely on the movie description and the glossary. If your tool refuses to look at an image (some frames can be violent or explicit), skip it and decide from the text.
 
 ### Translation rules (same as Gemini SRT Translator)
 
@@ -141,11 +188,17 @@ Report progress after each batch (e.g. "batch 3/7 done"). If your context is get
 
 ## Step 8: Fix subs
 
-Always run it on the translated file (it rewraps lines that are too long and fixes display times):
+Run it on the translated file (it rewraps lines that are too long and fixes display times):
 
 ```
 python "$S/srt_fix.py" "<output.srt>"
 ```
+
+> [!NOTE]
+> If the user requested to keep/preserve timings ("nie ruszaj czasów", "zachowaj czasy"), pass `--no-timing`:
+> ```
+> python "$S/srt_fix.py" "<output.srt>" --no-timing
+> ```
 
 Show the user the short report the script printed.
 
@@ -157,7 +210,7 @@ Ask whether to review the translation. If yes, compare it with the file you tran
 python "$S/subs_tool.py" review-split "<output.srt>" "<source.srt>" --out-dir "$W" --batch-size 150
 ```
 
-For each `review_NNN.json` (items `{index, original, translation}`), check the translation like a senior subtitle reviewer. Report only **real** defects:
+For each `review_NNN.json` (items `{index, original, translation}`), check the translation like a senior subtitle reviewer. For `gender` doubts you can use `frames` (see "Unclear lines"), but the `index` here is the number in the **translated** file, so pass `<output.srt>` instead of `<source.srt>`. Report only **real** defects:
 
 - `translation`: wrong meaning, lost information, wrong name/number/unit
 - `hallucination`: content that is not in the original
@@ -173,17 +226,23 @@ Collect the corrections in `$W/fixes.json` as `[{"index": "12", "text": "the who
 python "$S/subs_tool.py" review-apply "<output.srt>" "$W/fixes.json"
 ```
 
+If timings must be preserved, pass `--no-timing`:
+```
+python "$S/subs_tool.py" review-apply "<output.srt>" "$W/fixes.json" --no-timing
+```
+
 `review-apply` runs Fix subs again by itself (corrections change the text length, so display times must be fixed again). Do not skip it, and don't edit the file by hand after it.
 
 ## Step 10: Mark the file as an AI translation (always ask)
 
-**This question is mandatory.** Ask it every time a translated file has been written, whatever the answers to the earlier steps were: also when the review in step 9 was declined, and also after resuming interrupted work. Skip it only when the output name already ends with `.ar.srt` (or the code the user gave for AI translations).
+**This question is mandatory unless the user explicitly requested otherwise (e.g. "pomiń zmianę na ar", "zostaw .pl.srt").**
+Ask it every time a translated file has been written, whatever the answers to the earlier steps were: also when the review in step 9 was declined, and also after resuming interrupted work. Skip it only when the output name already ends with `.ar.srt` (or the code the user gave for AI translations).
 
-The user marks AI translations with the code `ar` in the file name instead of the language code. Ask whether to change the language code in the output file name, e.g. `Film.pl.srt` → `Film.ar.srt`. **Default: yes, to `ar`**; the user can also give a different code or keep the name.
+The user marks AI translations with the code `ar` in the file name instead of the language code. Ask whether to change the language code in the output file name, e.g. `Film.pl.srt` → `Film.ar.srt`. **Default: yes, to `ar`**; the user can also give a different code or keep the name (`.pl.srt`). If the user requested default settings, apply the rename to `.ar.srt` automatically unless they stated to omit this step.
 Only the last language code before `.srt` is replaced (`<name>.<code>.srt` or `<name>.<n>.<code>.srt`). If the new name already exists, ask whether to overwrite it or add a number (`<name>.2.ar.srt`). Rename the file with your file tools or the shell (`mv` / `Move-Item`).
 
 ## End
 
-Before finishing, check that the step 10 question was asked for **every** translated file. If it wasn't, ask it now.
+Before finishing, check that the step 10 question was asked for **every** translated file (or skipped per user instruction).
 
-Give the path of the finished file and a short summary (number of subtitles, batches, Fix subs result, number of review corrections). Ask whether to delete the video's working folder `$W` (do not delete it without the user's consent). For a series, keep `glossary.md` until the last episode is done.
+Give the path of the finished file and a short summary (number of subtitles, batches, Fix subs result, number of review corrections). Ask whether to delete the video's working folder `$W` (if the user requested default settings or full auto, delete it automatically; otherwise do not delete it without consent). For a series, keep `glossary.md` until the last episode is done.

@@ -119,3 +119,38 @@ def test_review_apply_fixes_timing_again(work):
                      encoding="utf-8")
     rc, res = run("review-apply", str(src), str(fixes))
     assert rc == 0 and res["applied"] == 1 and "fix" in res
+
+
+def _jpeg_size(path):
+    data = open(path, "rb").read()
+    assert data[:2] == b"\xff\xd8"   # JPEG
+    i = 2
+    while i < len(data):
+        marker, length = data[i + 1], int.from_bytes(data[i + 2:i + 4], "big")
+        if marker in (0xC0, 0xC2):
+            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i += 2 + length
+
+
+@pytest.mark.skipif(not __import__("shutil").which("ffmpeg"), reason="ffmpeg not installed")
+def test_frames_grid_in_one_image(tmp_path):
+    video = tmp_path / "Film.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=s=320x180:d=70",
+                    "-c:v", "libx264", str(video)], check=True)
+    src = tmp_path / "Film.en.srt"
+    src.write_text("1\n00:00:04,000 --> 00:00:06,000\nYou're tired.\n\n"
+                   "2\n00:00:15,000 --> 00:00:16,000\nGo home.\n\n", encoding="utf-8")
+
+    # default: -5, 0, +5 s on top, +10, +20, +60 s below; 240 px frames of a 16:9 video are 426 px wide
+    rc, res = run("frames", str(src), str(video), "--index", "1,9", "--out-dir", str(tmp_path / "f"))
+    ok = [f for f in res["frames"] if f["status"] == "ok"]
+    assert len(ok) == 1 and ok[0]["time"] == "0:00:05.000"
+    assert res["frames"][1]["status"] == "no such subtitle"
+    assert _jpeg_size(ok[0]["image"]) == (3 * 426, 2 * 240)
+    assert ok[0]["shown"] == ["", "You're tired.", "", "Go home.", "", ""]
+    assert ok[0]["subtitles_drawn"] is True
+
+    rc, res = run("frames", str(src), str(video), "--index", "1", "--offsets=-1,0,1",
+                  "--out-dir", str(tmp_path / "g"), "--no-text")
+    assert res["frames"][0]["subtitles_drawn"] is False
+    assert _jpeg_size(res["frames"][0]["image"]) == (3 * 426, 240)

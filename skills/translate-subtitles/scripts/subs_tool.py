@@ -17,6 +17,10 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
                                     markers, untranslated or empty lines, >2 lines, broken tags
   apply <srt> --out-dir DIR -o OUT  build the translated SRT from DIR/out_001.json ... (timings from <srt>)
           [--stamp "# Translated by ... #"]
+  frames <srt> <video> --index 12,40 --out-dir DIR
+          [--offsets=-5,0,5,10,20,60]  for unclear lines: frames around the subtitle (default 5 s before,
+          [--no-text]               the moment, 5 s after, then +10, +20 and +60 s) in ONE small image
+                                    per subtitle, with the subtitle shown at each moment drawn on its frame
   stamp <srt> --model NAME          add "# Translated by NAME #" as the first subtitle (like the GUI;
                                     replaces an existing stamp instead of adding a second one)
   review-split <translated> <source> --out-dir DIR [--batch-size 150]
@@ -36,6 +40,11 @@ import os
 import re
 import subprocess
 import sys
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from srt_merge import Cue, clean_cues, format_srt, parse_srt, read_text, parse_merged_name  # noqa: E402
@@ -214,12 +223,12 @@ def scene_cuts(cues, size, slack=0.3):
 def cmd_split(args):
     cues = parse_srt(read_text(args.srt))
     os.makedirs(args.out_dir, exist_ok=True)
-    done = glob.glob(os.path.join(args.out_dir, 'out_*.json'))
+    done = glob.glob(os.path.join(glob.escape(args.out_dir), 'out_*.json'))
     if done and not args.force:
         out({'error': 'work in progress', 'translated_batches': len(done),
              'hint': 'run "status" to resume, or split again with --force to start over'})
         return 2
-    for old in glob.glob(os.path.join(args.out_dir, 'batch_*.json')) + done:
+    for old in glob.glob(os.path.join(glob.escape(args.out_dir), 'batch_*.json')) + done:
         os.remove(old)
 
     def item(i):
@@ -353,7 +362,7 @@ def cmd_check(args):
 def cmd_apply(args):
     cues = parse_srt(read_text(args.srt))
     translated = {}
-    for path in sorted(glob.glob(os.path.join(args.out_dir, 'out_*.json'))):
+    for path in sorted(glob.glob(os.path.join(glob.escape(args.out_dir), 'out_*.json'))):
         with open(path, encoding='utf-8') as fh:
             for item in json.load(fh):
                 translated[str(item['index']).strip()] = str(item.get('text', ''))
@@ -383,6 +392,141 @@ def add_stamp(cues, text):
     cues = [c for c in cues if not (len(c.lines) == 1 and STAMP_RE.match(c.lines[0].strip()))]
     end = min(cues[0].start if cues else 5000, 5000)
     return [Cue(start=1000 if end == 5000 else 0, end=end, lines=[text])] + cues
+
+
+def _fmt_seconds(sec):
+    return f"{int(sec // 3600)}:{int(sec // 60 % 60):02d}:{sec % 60:06.3f}"
+
+
+_FONT_CANDIDATES = (
+    'C:/Windows/Fonts/arial.ttf', 'C:/Windows/Fonts/segoeui.ttf',
+    '/System/Library/Fonts/Supplemental/Arial.ttf', '/Library/Fonts/Arial.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/TTF/DejaVuSans.ttf',
+    '/usr/share/fonts/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+)
+
+
+def _find_font():
+    return next((f for f in _FONT_CANDIDATES if os.path.exists(f)), None)
+
+
+def _filter_path(path):
+    """Path for an ffmpeg filter option: forward slashes, ':' escaped (Windows drive letters)."""
+    return path.replace('\\', '/').replace(':', '\\:')
+
+
+def _subtitle_at(cues, seconds):
+    """Main text (no {xx: ...} reference lines) of the subtitle shown at `seconds`, or ''."""
+    ms = seconds * 1000
+    for cue in cues:
+        if cue.start <= ms < cue.end:  # a subtitle is gone at its end time
+            return '\n'.join(l for l in cue.lines if not l.lstrip().startswith('{'))
+    return ''
+
+
+PER_ROW = 3
+
+
+def _offset_label(offset):
+    return '0' if offset == 0 else f'{offset:+g}s'
+
+
+def _frames_cmd(video, times, labels, height, target, texts=None, font=None):
+    """Frames scaled to `height`, PER_ROW per row (grid filled with black), as one JPEG."""
+    cmd = ['ffmpeg', '-y', '-v', 'error']
+    for t in times:
+        cmd += ['-ss', f'{t:.3f}', '-i', video]
+    n = len(times)
+    chains = []
+    for k in range(n):
+        chain = f'[{k}:v]scale=-2:{height},setsar=1'
+        if texts is not None:
+            size = max(10, height // 18)
+            common = (f"fontfile='{_filter_path(font)}':expansion=none:fontcolor=white"
+                      f":box=1:boxcolor=black@0.65:boxborderw=3")
+            chain += f",drawtext={common}:fontsize={size}:text='{labels[k]}':x=4:y=4"
+            if texts[k]:
+                chain += (f",drawtext={common}:fontsize={size + 1}:textfile='{_filter_path(texts[k])}'"
+                          f":line_spacing=2:x=(w-text_w)/2:y=h-text_h-8")
+        chains.append(chain + f'[v{k}]')
+    inputs = ''.join(f'[v{k}]' for k in range(n))
+    if n == 1:
+        stack = f'{inputs}null[out]'
+    elif n <= PER_ROW:
+        stack = f'{inputs}hstack=inputs={n}[out]'
+    else:
+        # all frames have the same size, so the grid is regular: x = col * w0, y = row * h0
+        cells = []
+        for k in range(n):
+            row, col = divmod(k, PER_ROW)
+            x = '+'.join(['w0'] * col) or '0'
+            y = '+'.join(['h0'] * row) or '0'
+            cells.append(f'{x}_{y}')
+        stack = f"{inputs}xstack=inputs={n}:layout={'|'.join(cells)}:fill=black[out]"
+    cmd += ['-filter_complex', ';'.join(chains) + ';' + stack,
+            '-map', '[out]', '-frames:v', '1', '-q:v', '5', target]
+    return cmd
+
+
+def cmd_frames(args):
+    """One image per subtitle with frames at the given offsets around its middle (default:
+    -5 s, the moment, +5 s in the top row and +10, +20, +60 s below), each scaled to --height,
+    with the subtitle shown at that moment drawn at the bottom of the frame."""
+    cues = parse_srt(read_text(args.srt))
+    os.makedirs(args.out_dir, exist_ok=True)
+    font = None if args.no_text else _find_font()
+    offsets = [float(o) for o in args.offsets.split(',') if o.strip()]
+    labels = [_offset_label(o) for o in offsets]
+    results = []
+    for raw in args.index.split(','):
+        raw = raw.strip()
+        if not raw:
+            continue
+        pos = int(raw) - 1
+        if not 0 <= pos < len(cues):
+            results.append({'index': raw, 'status': 'no such subtitle'})
+            continue
+        cue = cues[pos]
+        moment = (cue.start + cue.end) / 2000  # middle of the subtitle, seconds
+        times = [max(0.0, moment + o) for o in offsets]
+        target = os.path.join(args.out_dir, f'frame_{int(raw):04d}.jpg')
+
+        text_files = None
+        shown = [_subtitle_at(cues, t) for t in times]
+        if font:
+            text_files = []
+            for k, text in enumerate(shown):
+                if not text:
+                    text_files.append(None)
+                    continue
+                path = os.path.abspath(os.path.join(args.out_dir, f'.text_{int(raw):04d}_{k}.txt'))
+                with open(path, 'w', encoding='utf-8') as fh:
+                    fh.write(_TAG_RE.sub('', text))
+                text_files.append(path)
+
+        res = subprocess.run(_frames_cmd(args.video, times, labels, args.height, target, text_files, font),
+                             capture_output=True, text=True, encoding='utf-8', errors='replace')
+        with_text = text_files is not None
+        if res.returncode != 0 and with_text:
+            # drawtext unavailable in this ffmpeg build: plain frames are still useful
+            res = subprocess.run(_frames_cmd(args.video, times, labels, args.height, target),
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace')
+            with_text = False
+        for path in text_files or []:
+            if path and os.path.exists(path):
+                os.remove(path)
+
+        if res.returncode == 0 and os.path.exists(target):
+            results.append({'index': raw, 'status': 'ok', 'image': os.path.abspath(target),
+                            'time': _fmt_seconds(moment), 'text': cue.text,
+                            'subtitles_drawn': with_text, 'shown': shown})
+        else:
+            results.append({'index': raw, 'status': 'failed', 'error': res.stderr.strip()[-300:]})
+    out({'layout': f'frames left to right, {PER_ROW} per row, labelled in the top-left corner with the '
+                   f'offset from the subtitle ({", ".join(labels)}); the subtitle shown at each moment '
+                   'is drawn at the bottom of its frame. Frames far from the moment may be a different shot or scene.',
+         'frames': results})
+    return 0 if all(r['status'] == 'ok' for r in results) else 2
 
 
 def cmd_stamp(args):
@@ -419,7 +563,7 @@ def cmd_review_split(args):
         pairs.append({'index': str(n), 'original': best.text if best and best_ratio >= 0.2 else '',
                       'translation': cue.text})
     os.makedirs(args.out_dir, exist_ok=True)
-    for old in glob.glob(os.path.join(args.out_dir, 'review_*.json')):
+    for old in glob.glob(os.path.join(glob.escape(args.out_dir), 'review_*.json')):
         os.remove(old)
     files = []
     for b, start in enumerate(range(0, len(pairs), args.batch_size), 1):
@@ -465,7 +609,7 @@ def cmd_review_apply(args):
     with open(args.translated, 'w', encoding='utf-8', newline='') as fh:
         fh.write(format_srt(cues))
     # corrections change text lengths, so display times are fixed again afterwards
-    _, fix_stats = fix_srt(args.translated)
+    _, fix_stats = fix_srt(args.translated, timing=not getattr(args, 'no_timing', False))
     out({'applied': len(applied), 'changes': applied,
          'fix': {k: fix_stats.get(k, 0) for k in ('rewrapped', 'extended', 'gaps_fixed')}})
 
@@ -501,6 +645,16 @@ def main():
     p.add_argument('-o', '--output', required=True); p.add_argument('--stamp', default='')
     p.add_argument('--allow-missing', action='store_true'); p.set_defaults(func=cmd_apply)
 
+    p = sub.add_parser('frames'); p.add_argument('srt'); p.add_argument('video')
+    p.add_argument('--index', required=True, help='subtitle numbers, e.g. 12,40')
+    p.add_argument('--out-dir', required=True)
+    p.add_argument('--offsets', default='-5,0,5,10,20,60',
+                   help='seconds from the middle of the subtitle, one frame each (default -5,0,5,10,20,60; '
+                        'write it as --offsets=-5,0,5 because of the leading minus)')
+    p.add_argument('--height', type=int, default=240, help='height of each frame in px (default 240)')
+    p.add_argument('--no-text', action='store_true', help='do not draw the subtitles on the frames')
+    p.set_defaults(func=cmd_frames)
+
     p = sub.add_parser('stamp'); p.add_argument('srt'); p.add_argument('--model', required=True)
     p.set_defaults(func=cmd_stamp)
 
@@ -508,7 +662,7 @@ def main():
     p.add_argument('--out-dir', required=True); p.add_argument('--batch-size', type=int, default=150)
     p.set_defaults(func=cmd_review_split)
 
-    p = sub.add_parser('review-apply'); p.add_argument('translated'); p.add_argument('fixes')
+    p = sub.add_parser('review-apply'); p.add_argument('translated'); p.add_argument('fixes'); p.add_argument('--no-timing', action='store_true', help='do not alter display times')
     p.set_defaults(func=cmd_review_apply)
 
     args = ap.parse_args()
