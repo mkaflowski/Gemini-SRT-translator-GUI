@@ -400,7 +400,9 @@ def fix_lone_dash(lines: Sequence[str]) -> tuple[list[str], str | None]:
         # zdanie przechodzi do drugiej linii — to jedna osoba, myślnik jest zbędny
         # („- Greg wydawał się uczciwym / mechanikiem,”)
         if not first.endswith(tuple(".!?…♪\"”»")) or (second[:1].isalpha() and second[:1].islower()):
-            return [_LEADING_DASH_RE.sub(r"\1", lines[0], count=1), lines[1]], None
+            new_first = _LEADING_DASH_RE.sub(r"\1", lines[0], count=1)
+            # pusta linia w SRT kończy blok napisu — linia z samym myślnikiem znika
+            return [l for l in (new_first, lines[1]) if TAG_RE.sub("", l).strip()], None
     if len(lines) == 2 and dashed == [1]:
         # „Nie? / - Nie.” — druga linia to kwestia drugiej osoby; po polsku obie
         # kwestie dialogu zaczynają się od myślnika (styl closed captions z USA
