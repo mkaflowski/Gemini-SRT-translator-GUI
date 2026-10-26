@@ -59,7 +59,8 @@ def get_translate_instruction(
     core_rules = f"""
 ## {section_number}. Core Translation Rules
 - **Translate Text Only**: Only translate the value of the `text` field.
-- **Preserve Formatting**: Keep all existing formatting, including HTML tags (`<i>`, `<b>`) and line breaks (`\\n`).
+- **Preserve Formatting**: Keep all existing formatting, including HTML tags (`<i>`, `<b>`) and line breaks (`\\n`). A line break is always `\\n` - never write ` / ` between lines or speakers.
+- **Dashes**: Use a plain hyphen `-` for dialogue and pauses, never an em dash `—`.
 - **Handle Empty Text**: If a `text` field is empty or contains only whitespace, keep it unchanged.
 - **Maintain Integrity**:
   - Number of items in the output must match the input.

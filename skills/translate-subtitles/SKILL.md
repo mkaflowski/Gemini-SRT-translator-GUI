@@ -178,7 +178,8 @@ Without a video file in the folder, skip this and rely on the movie description 
 
 - Translate only the `text` of the `translate` items into the target language. The number of output items must be **identical** to the number of `translate` items. Do not add, remove, reorder or **merge text between items**: the original and the translation must match item by item.
 - An empty or whitespace-only `text` stays unchanged.
-- Keep the formatting: HTML tags (`<i>`, `<b>`) and line breaks (`\n`).
+- Keep the formatting: HTML tags (`<i>`, `<b>`) and line breaks (`\n`). A line break is always `\n`: **never** write ` / ` between lines or speakers (`Fajnie. / - Słyszałeś?` is wrong).
+- Use a plain hyphen `-` for dialogue and pauses, never an em dash `—`.
 - Lines of 40 to 50 characters at most (ideally ≤ 42), at most 2 lines, broken at natural phrase boundaries or after punctuation.
 - Dialogue between two speakers: each speaker's line on its own line, starting with a dash (`- `).
 - Correct spaces between words and after punctuation. When a sentence continues on the next line, keep the spacing between the lines.

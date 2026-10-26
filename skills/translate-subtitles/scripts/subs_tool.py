@@ -48,7 +48,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from srt_merge import Cue, clean_cues, format_srt, parse_srt, read_text, parse_merged_name  # noqa: E402
-from srt_fix import fix_cue_lines, fix_srt  # noqa: E402
+from srt_fix import fix_cue_lines, fix_srt, has_slash_break  # noqa: E402
 
 VIDEO_EXT = {'.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm', '.wmv', '.ts'}
 SUB_EXT = {'.srt'}
@@ -319,6 +319,10 @@ def check_items(source, translated, max_len=42):
             found.append('contains a {xx: ...} reference line')
         if _MARKER_RE.search(text):
             found.append('contains the missing-subtitle marker')
+        if any(has_slash_break(l) for l in text.split('\n')):
+            found.append('uses " / " as a line break (use a real line break "\\n")')
+        if '—' in text:
+            found.append('uses an em dash "—" (use "-")')
         if not text.strip() and src.strip():
             found.append('empty translation')
         plain = _TAG_RE.sub('', text).strip()

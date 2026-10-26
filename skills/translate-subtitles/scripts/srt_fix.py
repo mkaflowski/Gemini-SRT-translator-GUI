@@ -374,6 +374,61 @@ def _starts_with_dash(line: str) -> bool:
     return TAG_RE.sub("", line).lstrip().startswith(DASH_START)
 
 
+# „ / ” użyte jako podział linii (spacja z przynajmniej jednej strony) — nie „24/7”, „km/h”
+_SLASH_BREAK_RE = re.compile(r"\s+/\s+|\s+/(?=[-–—])")
+_SLASH_EDGE_RE = re.compile(r"^\s*/\s+|\s+/\s*$")
+
+
+_EM_DASH_START_RE = re.compile(r"^((?:\s*<[^>]+>)*)\s*—\s*")
+
+
+def replace_em_dashes(lines: Sequence[str]) -> list[str]:
+    """Długi myślnik „—” -> zwykły „-” (na początku linii jako „- ” dialogu)."""
+    return [_EM_DASH_START_RE.sub(r"\1- ", line, count=1).replace("—", "-") for line in lines]
+
+
+def has_slash_break(line: str) -> bool:
+    plain = TAG_RE.sub("", line)
+    return bool(_SLASH_BREAK_RE.search(plain) or _SLASH_EDGE_RE.search(plain))
+
+
+def fix_slash_breaks(lines: Sequence[str]) -> list[str]:
+    """Zamień „ / ” użyte jako podział linii na prawdziwe linie.
+
+    Modele tłumaczące czasem piszą „Fajnie. / - Słyszałeś?” zamiast dwóch linii.
+    „X / -” + „Y” to dialog (druga kwestia w następnej linii), a „trzymaj się, /
+    stary.” to zwykłe łamanie zdania jednej osoby — te części są sklejane.
+    """
+    lines = list(lines)
+    if not any(has_slash_break(l) for l in lines):
+        return lines
+    parts: list[str] = []
+    pending_dash = False
+    for line in lines:
+        line = _SLASH_EDGE_RE.sub("", line)
+        for part in _SLASH_BREAK_RE.split(line):
+            part = part.strip()
+            if not TAG_RE.sub("", part).strip():
+                continue
+            if TAG_RE.sub("", part).strip() in ("-", "–", "—"):
+                pending_dash = True       # „X / -”: następna część to druga osoba
+                continue
+            if pending_dash and not _starts_with_dash(part):
+                part = "- " + part
+            pending_dash = False
+            body = _LEADING_DASH_RE.sub("", part, count=1)
+            prev = TAG_RE.sub("", parts[-1]).rstrip() if parts else ""
+            # mała litera po niedokończonej linii: to samo zdanie, ta sama osoba
+            if parts and body[:1].isalpha() and body[:1].islower() and not prev.endswith(tuple(".!?…")):
+                parts[-1] = parts[-1].rstrip() + " " + body
+            else:
+                parts.append(part)
+    # dialog: każda kwestia zaczyna się od myślnika
+    if len(parts) >= 2 and any(_starts_with_dash(p) for p in parts):
+        parts = [p if _starts_with_dash(p) else "- " + p for p in parts]
+    return parts
+
+
 def fix_lone_dash(lines: Sequence[str]) -> tuple[list[str], str | None]:
     """Myślnik dialogowy oznacza dwie osoby w jednym napisie.
 
@@ -417,8 +472,18 @@ def fix_lone_dash(lines: Sequence[str]) -> tuple[list[str], str | None]:
 def fix_cues(cues: list[Cue], max_len: int = MAX_LEN, max_lines: int = MAX_LINES):
     """Popraw wszystkie napisy; zwraca (napisy, statystyki)."""
     stats = {"cues": len(cues), "rewrapped": 0, "too_long_before": 0,
-             "too_long_after": 0, "too_many_lines": 0, "dashes_removed": 0, "problems": []}
+             "too_long_after": 0, "too_many_lines": 0, "dashes_removed": 0,
+             "slashes_fixed": 0, "em_dashes": 0, "problems": []}
     for cue in cues:
+        plain_dashes = replace_em_dashes(cue.lines)
+        if plain_dashes != cue.lines:
+            stats["em_dashes"] += 1
+            cue.lines = plain_dashes
+        # „Fajnie. / - Słyszałeś?” -> dwie linie (przed myślnikami i łamaniem)
+        unslashed = fix_slash_breaks(cue.lines)
+        if unslashed != cue.lines:
+            stats["slashes_fixed"] += 1
+            cue.lines = unslashed
         # najpierw myślnik: przy łamaniu jedna kwestia z myślnikiem byłaby dalej „dialogiem”
         undashed, dash_problem = fix_lone_dash(cue.lines)
         if undashed != cue.lines:
@@ -649,7 +714,9 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     print(f"[fix] napisów: {stats['cues']}, przełamanych: {stats['rewrapped']}, "
           f"za długich linii: {stats['too_long_before']} → {stats['too_long_after']}, "
-          f"usuniętych pojedynczych myślników: {stats['dashes_removed']}",
+          f"usuniętych pojedynczych myślników: {stats['dashes_removed']}, "
+          f"poprawionych „ / ”: {stats['slashes_fixed']}, "
+          f"zamienionych „—”: {stats['em_dashes']}",
           file=sys.stderr)
     if "short_before" in stats:
         print(f"[fix] czasy: za krótkich {stats['short_before']} → "
