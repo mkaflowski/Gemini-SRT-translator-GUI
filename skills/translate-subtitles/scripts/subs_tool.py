@@ -50,7 +50,13 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from srt_merge import Cue, clean_cues, format_srt, parse_srt, read_text, parse_merged_name  # noqa: E402
-from srt_fix import fix_cue_lines, fix_srt, has_slash_break  # noqa: E402
+from srt_fix import CPS, MAX_LEN, MAX_LINES, MIN_GAP, char_count, fix_cue_lines, fix_srt, has_slash_break  # noqa: E402
+
+# How long Fix subs may keep a subtitle on screen after the speech ends, counted in the
+# character budget. Kept well under its 2 s limit, so the subtitle stays near its line.
+BUDGET_TRAIL_MS = 700
+BUDGET_MIN = 14
+BUDGET_TOLERANCE = 4
 
 VIDEO_EXT = {'.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm', '.wmv', '.ts'}
 SUB_EXT = {'.srt'}
@@ -222,6 +228,18 @@ def scene_cuts(cues, size, slack=0.3):
     return ranges
 
 
+def char_budget(cues, i, cps=CPS):
+    """How many characters the viewer can read while cue i is on screen: its time plus a
+    short stay after the speech (up to the next subtitle), at the reading speed Fix subs
+    uses. Never more than two full lines."""
+    cue = cues[i]
+    end = cue.end + BUDGET_TRAIL_MS
+    if i + 1 < len(cues):
+        end = min(end, max(cue.end, cues[i + 1].start - MIN_GAP))
+    budget = int((end - cue.start) / 1000 * cps)
+    return max(BUDGET_MIN, min(budget, MAX_LEN * MAX_LINES))
+
+
 def cmd_split(args):
     cues = parse_srt(read_text(args.srt))
     os.makedirs(args.out_dir, exist_ok=True)
@@ -236,6 +254,9 @@ def cmd_split(args):
     def item(i):
         return {'index': str(i + 1), 'text': cues[i].text}
 
+    def to_translate(i):
+        return dict(item(i), max_chars=char_budget(cues, i))
+
     if args.fixed:
         ranges = [(s, min(s + args.batch_size, len(cues))) for s in range(0, len(cues), args.batch_size)]
     else:
@@ -243,7 +264,7 @@ def cmd_split(args):
     batches = []
     for b, (start, end) in enumerate(ranges, 1):
         data = {
-            'translate': [item(i) for i in range(start, end)],
+            'translate': [to_translate(i) for i in range(start, end)],
             # read-only context so sentences at the edges are not translated blind
             'context_before': [item(i) for i in range(max(0, start - args.context), start)],
             'context_after': [item(i) for i in range(end, min(len(cues), end + args.context_after))],
@@ -563,6 +584,7 @@ def check_items(source, translated, max_len=42):
     """Problems in translated batch items compared with their source items."""
     problems = []
     src_by_index = {str(i['index']).strip(): i.get('text', '') for i in source}
+    budget_by_index = {str(i['index']).strip(): i['max_chars'] for i in source if i.get('max_chars')}
     trans_by_index = {}
     for item in translated:
         idx = str(item.get('index', '')).strip()
@@ -590,6 +612,11 @@ def check_items(source, translated, max_len=42):
         too_long = [l for l in lines if len(_TAG_RE.sub('', l)) > max_len + 8]
         if too_long:
             found.append(f'line longer than {max_len + 8} chars')
+        budget = budget_by_index.get(idx)
+        if budget and lines:
+            chars = char_count(lines)
+            if chars > budget + BUDGET_TOLERANCE:
+                found.append(f'too long to read: {chars} chars, {budget} fit in its time (condense it)')
         for tag in ('i', 'b'):
             if text.count(f'<{tag}>') != text.count(f'</{tag}>'):
                 found.append(f'unbalanced <{tag}> tag')
@@ -947,8 +974,12 @@ def cmd_review_split(args):
                 ratio = ov / (min(cand.duration, cue.duration) or 1)
                 if ratio > best_ratio:
                     best, best_ratio = cand, ratio
-        pairs.append({'index': str(n), 'original': best.text if best and best_ratio >= 0.2 else '',
-                      'translation': cue.text})
+        pair = {'index': str(n), 'original': best.text if best and best_ratio >= 0.2 else '',
+                'translation': cue.text}
+        cps = char_count(cue.lines) / max(cue.end - cue.start, 1) * 1000
+        if cps > CPS:
+            pair['cps'] = round(cps, 1)  # faster than a viewer reads: a candidate for condensing
+        pairs.append(pair)
     os.makedirs(args.out_dir, exist_ok=True)
     for old in glob.glob(os.path.join(glob.escape(args.out_dir), 'review_*.json')):
         os.remove(old)

@@ -115,7 +115,7 @@ Tell the user how many batches are done and ask whether to **continue** (default
    Batches are cut at **scene breaks**: in the 70–130 subtitle window the script picks the longest pause in the dialogue, preferably right after a finished sentence. That's why batch sizes vary (`manifest.json` shows `count`, `pause_after_ms` and `sentence_end` for each cut). Add `--fixed` to cut exactly every N subtitles instead.
 
 2. Each `batch_NNN.json` has three parts:
-   - `translate`: the subtitles to translate in this batch,
+   - `translate`: the subtitles to translate in this batch, each with `max_chars` (the reading budget, see "Translation style"),
    - `context_before`: the last 10 subtitles of the previous batch, **read-only**,
    - `context_after`: the first 5 subtitles of the next batch, **read-only**.
 
@@ -152,6 +152,7 @@ Tell the user how many batches are done and ask whether to **continue** (default
    - **Anchors** (`src anchor mismatch`, an error): a `src` that does not match its own source cue. The report gives the first wrong cue and, when it finds one, the cue whose text it really is (`it is the text of cue 281`).
    - **Shift suspects** (`shift_suspects`, a warning): runs of cues whose translations fit the neighbouring source cues better than their own (by length, numbers, names, `?`/`!`, dialogue dashes, italics). `offset: 1` means each cue carries the next cue's translation, so the subtitles come too early. This also works for batches without anchors.
    - **Empty translations** for a source cue with text (merged cues).
+   - **Too long to read**: more characters than `max_chars` (with a small tolerance). Condense these (see "Translation style").
    - Copied `{xx: ...}` reference lines or the missing-subtitle marker.
    - Slash breaks (` / `), em dashes (`—`/`–`), unbalanced tags (`<i>`, `<b>`, `<font>`).
    - Whole-movie coverage against `<source.srt>`.
@@ -197,6 +198,34 @@ One image costs about as much as 60 subtitle lines, so:
 
 Without a video file in the folder, skip this and rely on the movie description and the glossary. If your tool refuses to look at an image (some frames can be violent or explicit), skip it and decide from the text.
 
+### Translation style: film subtitles, not a transcript
+
+Translate the way professional film subtitlers do. The viewer has a moment to read each subtitle while also watching the picture, so a subtitle gives **the meaning, the intent and the tone** of the line, not every word of it. Speech is faster than reading: a good Polish subtitle is usually clearly shorter than a word-for-word translation, and dropping a quarter or a third of the words is normal.
+
+**The budget.** Every `translate` item has `max_chars`: how many characters a viewer can read in the time the subtitle is on screen (17 characters per second, the same as Fix subs; spaces count, tags don't). Treat it as the limit for the whole subtitle (both lines). When a full translation would not fit, condense it until it does. When it fits easily, don't cut for the sake of cutting: a short line keeps its full meaning. `check` reports subtitles that are clearly over the budget.
+
+**What to drop or shorten** (when it carries no meaning the scene needs):
+- filler and hesitation: *well, you know, I mean, like, so, okay, uh, look, listen*, stuttering, false starts,
+- repetitions: *"No, no, no, no!"* → *"Nie!"*; *"Go, go, go!"* → *"Szybko!"*,
+- subject pronouns (Polish doesn't need them): *"I don't know"* → *"Nie wiem"*, not *"Ja nie wiem"*,
+- forms of address and names once it is clear who is talking to whom (keep a name the first time, when it matters, or when it is the point of the line),
+- tag questions and phatic phrases (*right?, okay?, you see*) unless they change the meaning,
+- what the picture already shows (*"Look at this car"* while the car fills the screen → *"Patrz"*),
+- long-winded wording: use a shorter synonym, a simpler construction, a direct question instead of an indirect one (*"Do you think you could possibly help me?"* → *"Pomożesz mi?"*).
+
+**What never to drop:** information the story needs (facts, names on first mention, numbers, times, places), negations and conditions, the point of a joke, irony, threats and promises, the character's register and emotion (rude stays rude, formal stays formal, a child speaks like a child).
+
+**Natural Polish, not a calque.**
+- Use the idiom a Pole would say, not a literal one: *"It's raining cats and dogs"* → *"Leje jak z cebra"*; *"Break a leg"* → *"Połamania nóg"*; *"I'm on it"* → *"Już się robi"*.
+- Wordplay: if it can't be kept, make a Polish joke with the same function rather than translating the words.
+- Cultural references: keep the ones a Polish viewer knows; otherwise replace them with a general equivalent (*"He's a real Benedict Arnold"* → *"To zdrajca"*).
+- Units: convert to metric when the exact number doesn't matter (*"a mile away"* → *"półtora kilometra stąd"* or *"kawał drogi stąd"*). Keep the original numbers when they matter for the plot or the joke. Money stays in its currency.
+- Swearing: use natural Polish equivalents of the same strength, varied, not one word for every *fuck*. Don't make it stronger than the original.
+
+**Condensing never breaks the cue mapping.** Each subtitle still says what is heard while it is on screen. A sentence spread across two cues may be reworded, but its first part stays in the first cue and the rest in the second (each with its own `src`). Never move content to a cue where it isn't spoken, and never leave a cue empty because "it was said in the previous one".
+
+If the user asks for a **faithful / full translation** ("dokładne tłumaczenie", "wierne", "bez skracania"), translate everything and drop only pure filler, still keeping the lines within 2 × 42 characters.
+
 ### Translation rules (same as Gemini SRT Translator)
 
 - Translate only the `text` of the `translate` items into the target language. The number of output items must be **identical** to the number of `translate` items. Do not add, remove, reorder or **merge text between items**: the original and the translation must match item by item.
@@ -206,9 +235,8 @@ Without a video file in the folder, skip this and rely on the movie description 
 - Lines of 40 to 50 characters at most (ideally ≤ 42), at most 2 lines, broken at natural phrase boundaries or after punctuation.
 - Dialogue between two speakers: each speaker's line on its own line, starting with a dash (`- `).
 - Correct spaces between words and after punctuation. When a sentence continues on the next line, keep the spacing between the lines.
-- Natural, spoken target language, not a word-for-word calque. Grammatical gender and formality (formal or informal address) follow from the characters and context (glossary, movie description).
+- Natural, spoken target language, not a word-for-word calque (see "Translation style" above). Grammatical gender and formality (formal or informal address) follow from the characters and context (glossary, movie description).
 - **Merged file**: the `{xx: ...}` lines are only a reference translation of the same moment from another track. Use them as context (gender, formality, number, idioms, who is speaking to whom). When the base line is the `[en: BRAK NAPISÓW - PRZETŁUMACZ Z POZOSTAŁYCH]` marker, translate the reference line instead. **The output contains ONLY the final subtitle in the target language**: never copy the `{xx: ...}` lines or the marker into `text`.
-- If the user wants a "concise translation": short, clear sentences that keep the full meaning; drop filler words and repetitions ("uhm", "well", "you know").
 
 ## Step 8: Fix subs
 
@@ -239,15 +267,16 @@ Ask whether to review the translation. If yes, compare it with the file you tran
 python "$S/subs_tool.py" review-split "<output.srt>" "<source.srt>" --out-dir "$W" --batch-size 150
 ```
 
-For each `review_NNN.json` (items `{index, original, translation}`), check the translation like a senior subtitle reviewer. For `gender` doubts you can use `frames` (see "Unclear lines"), but the `index` here is the number in the **translated** file, so pass `<output.srt>` instead of `<source.srt>`. Report only **real** defects:
+For each `review_NNN.json` (items `{index, original, translation}`, plus `cps` when the subtitle is faster to read than 17 characters per second), check the translation like a senior subtitle reviewer. For `gender` doubts you can use `frames` (see "Unclear lines"), but the `index` here is the number in the **translated** file, so pass `<output.srt>` instead of `<source.srt>`. Report only **real** defects:
 
 - `translation`: wrong meaning, lost information, wrong name/number/unit
 - `hallucination`: content that is not in the original
 - `spelling`: spelling, grammar, punctuation, typos
 - `unnatural`: correct but not how a native speaker would say it (calque, word order, register)
 - `gender`: wrong grammatical gender, number or formality of the speaker or the person addressed
+- `condense`: too long to read in its time (items with `cps`, characters per second above 17) where a shorter wording keeps the meaning; also a long word-for-word rendering of something a subtitler would say in a few words
 
-Subtitles are condensed on purpose: shortening and dropping filler words are **not** defects. An acceptable alternative is not a defect. Do not invent defects.
+Subtitles are condensed on purpose: shortening and dropping filler words are **not** defects, as long as the meaning the scene needs is kept (see "Translation style"). Dropping information the story needs **is** a `translation` defect. An acceptable alternative is not a defect. Do not invent defects.
 
 Collect the corrections in `$W/fixes.json` as `[{"index": "12", "text": "the whole corrected subtitle (with \n)", "category": "gender", "problem": "..."}]`, and show the user a short list (category, fragment, before → after). Then apply them:
 

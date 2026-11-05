@@ -323,3 +323,24 @@ def test_fix_srt_resolves_doubtful_dashes_with_source(tmp_path):
     text = pl.read_text(encoding="utf-8")
     assert "Smakuje mi.\nTrochę słone." in text and "- Smakuje" not in text   # one speaker: dash gone
     assert "- Dobra.\nTo będzie 87 dolarów." in text                           # speaker change: left as is
+
+
+def test_split_gives_reading_budget_and_check_flags_long_lines(work):
+    src, w = work
+    run("split", str(src), "--out-dir", str(w), "--batch-size", "100")
+    items = json.loads((w / "batch_001.json").read_text(encoding="utf-8"))["translate"]
+    # 2 s on screen + 0.7 s after it (the next cue is 1 s later) at 17 cps
+    assert items[0]["max_chars"] == int(2.7 * 17)
+    out = [{"index": i["index"], "src": subs_tool.anchor_of(i["text"]), "text": "Linia " + i["index"]} for i in items]
+    out[2]["text"] = "Bardzo długie zdanie, którego nikt nie zdąży\nprzeczytać w dwie sekundy na ekranie."
+    (w / "out_001.json").write_text(json.dumps(out), encoding="utf-8")
+    rc, res = run("check", "--out-dir", str(w))
+    problems = {i["index"]: i["problems"] for r in res["report"] for i in r.get("items", [])}
+    assert list(problems) == ["3"] and "too long to read" in problems["3"][0]
+
+
+def test_char_budget_limits():
+    from srt_merge import Cue
+    cues = [Cue(0, 400, ["Hi."]), Cue(500, 20000, ["Long speech."])]
+    assert subs_tool.char_budget(cues, 0) == subs_tool.BUDGET_MIN      # never below the minimum
+    assert subs_tool.char_budget(cues, 1) == 84                       # never more than two full lines
