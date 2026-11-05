@@ -679,15 +679,7 @@ def fix_srt(path: str, out_path: str | None = None, max_len: int = MAX_LEN,
     cues = parse_srt(read_text(path))
     clean_stats = {}
     if clean_music or clean_sdh:
-        cues, clean_stats = clean_cues(cues, music=clean_music, sdh=clean_sdh)
-        filtered_cues = []
-        for c in cues:
-            clean_lines = [re.sub(r"<[^>]+>", "", l).strip() for l in c.lines]
-            if not all(re.match(r"^[-–—\s]*[A-ZĄĆĘŁŃÓŚŹŻa-ząćęłńóśźż0-9\s]+:$", l) for l in clean_lines if l):
-                filtered_cues.append(c)
-            else:
-                clean_stats["removed_cues"] = clean_stats.get("removed_cues", 0) + 1
-        cues = filtered_cues
+        cues, clean_stats = clean_cues(cues, music=clean_music, sdh=clean_sdh)
     if out_path is None:
         out_path = path
     cues, stats = fix_cues(cues, max_len)
