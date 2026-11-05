@@ -267,27 +267,88 @@ def _load_json(path):
         return json.load(fh)
 
 
+def _get_batch_items(data):
+    if isinstance(data, dict):
+        return data.get('translate', [])
+    elif isinstance(data, list):
+        return data
+    return []
+
+
 def _batch_status(out_dir):
-    """[(batch info, state, problem)] for every batch in the manifest."""
-    manifest = _load_json(os.path.join(out_dir, 'manifest.json'))
+    """[(batch info, state, problem)] for every batch in the manifest (or discovered)."""
+    manifest_path = os.path.join(out_dir, 'manifest.json')
+    if os.path.exists(manifest_path):
+        try:
+            manifest = _load_json(manifest_path)
+            batches = manifest.get('batches', [])
+        except Exception:
+            manifest = {'source': 'unknown', 'batches': []}
+            batches = []
+    else:
+        manifest = {'source': 'unknown', 'batches': []}
+        batches = []
+
+    if not batches:
+        batch_files = sorted(glob.glob(os.path.join(glob.escape(out_dir), 'batch_*.json')))
+        for bp in batch_files:
+            b_name = os.path.basename(bp)
+            out_name = b_name.replace('batch_', 'out_')
+            batches.append({'batch': b_name, 'output': out_name})
+        manifest['batches'] = batches
+
     rows = []
-    for info in manifest['batches']:
-        wanted = [i['index'] for i in _load_json(os.path.join(out_dir, info['batch']))['translate']]
+    for info in batches:
+        b_path = os.path.join(out_dir, info['batch'])
         out_path = os.path.join(out_dir, info['output'])
         if not os.path.exists(out_path):
             rows.append((info, 'todo', ''))
             continue
         try:
-            got = [str(i.get('index')).strip() for i in _load_json(out_path)]
+            b_data = _load_json(b_path)
+            src_items = _get_batch_items(b_data)
+            wanted = [str(i['index']).strip() for i in src_items]
+        except Exception as e:
+            rows.append((info, 'broken', f'invalid source JSON: {e}'))
+            continue
+        try:
+            got_data = _load_json(out_path)
+            if not isinstance(got_data, list):
+                rows.append((info, 'broken', 'output is not a JSON list'))
+                continue
+            got = [str(i.get('index', '')).strip() for i in got_data]
         except Exception as e:
             rows.append((info, 'broken', f'invalid JSON: {e}'))
             continue
+
+        if len(got) != len(wanted):
+            rows.append((info, 'incomplete', f'count mismatch: expected {len(wanted)} items, got {len(got)} (possible merged cues!)'))
+            continue
+
         missing = [i for i in wanted if i not in got]
         extra = [i for i in got if i not in wanted]
         if missing or extra:
-            rows.append((info, 'incomplete', f'missing {missing[:10]} extra {extra[:10]}'))
-        else:
-            rows.append((info, 'done', ''))
+            rows.append((info, 'incomplete', f'index mismatch: missing {missing[:10]} extra {extra[:10]}'))
+            continue
+
+        if got != wanted:
+            rows.append((info, 'incomplete', 'indices out of sequence or duplicated'))
+            continue
+
+        src_dict = {str(i['index']).strip(): i.get('text', '') for i in src_items}
+        empties = []
+        for item in got_data:
+            idx = str(item.get('index', '')).strip()
+            text = str(item.get('text', ''))
+            src_t = src_dict.get(idx, '')
+            src_clean = '\n'.join(l for l in src_t.split('\n') if not l.lstrip().startswith('{')).strip()
+            if src_clean and not text.strip():
+                empties.append(idx)
+        if empties:
+            rows.append((info, 'incomplete', f'empty translation at cues {empties[:10]} (merged cues / shift desync risk!)'))
+            continue
+
+        rows.append((info, 'done', ''))
     return manifest, rows
 
 
@@ -309,9 +370,12 @@ _TAG_RE = re.compile(r'<[^>]+>')
 def check_items(source, translated, max_len=42):
     """Problems in translated batch items compared with their source items."""
     problems = []
-    src_by_index = {i['index']: i['text'] for i in source}
+    src_by_index = {str(i['index']).strip(): i.get('text', '') for i in source}
+    trans_by_index = {}
     for item in translated:
-        idx, text = str(item.get('index')), str(item.get('text', ''))
+        idx = str(item.get('index', '')).strip()
+        text = str(item.get('text', ''))
+        trans_by_index[idx] = text
         src = src_by_index.get(idx, '')
         src_main = '\n'.join(l for l in src.split('\n') if not l.lstrip().startswith('{'))
         found = []
@@ -323,8 +387,8 @@ def check_items(source, translated, max_len=42):
             found.append('uses " / " as a line break (use a real line break "\\n")')
         if '—' in text or '–' in text:
             found.append('uses a long dash "—" or "–" (use "-")')
-        if not text.strip() and src.strip():
-            found.append('empty translation')
+        if not text.strip() and src_main.strip():
+            found.append('empty translation (desync/shift risk!)')
         plain = _TAG_RE.sub('', text).strip()
         if len(plain) >= 12 and plain == _TAG_RE.sub('', src_main).strip():
             found.append('identical to the source (not translated?)')
@@ -337,51 +401,167 @@ def check_items(source, translated, max_len=42):
         for tag in ('i', 'b'):
             if text.count(f'<{tag}>') != text.count(f'</{tag}>'):
                 found.append(f'unbalanced <{tag}> tag')
+        font_open = len(re.findall(r'<font\b[^>]*>', text, re.IGNORECASE))
+        font_close = len(re.findall(r'</font>', text, re.IGNORECASE))
+        if font_open != font_close:
+            found.append(f'unbalanced <font> tag ({font_open} open, {font_close} close)')
         if found:
             problems.append({'index': idx, 'problems': found, 'text': text})
+
+    for idx in src_by_index:
+        if idx not in trans_by_index:
+            problems.append({'index': idx, 'problems': ['missing cue in translation'], 'text': ''})
     return problems
 
 
 def cmd_check(args):
     manifest, rows = _batch_status(args.out_dir)
     report = []
+    critical_count = 0
     for info, state, problem in rows:
         if state == 'todo':
             continue
         entry = {'batch': info['output']}
         if problem:
             entry['problems'] = [problem]
+            critical_count += 1
         if state != 'broken':
-            source = _load_json(os.path.join(args.out_dir, info['batch']))['translate']
-            issues = check_items(source, _load_json(os.path.join(args.out_dir, info['output'])))
+            b_path = os.path.join(args.out_dir, info['batch'])
+            o_path = os.path.join(args.out_dir, info['output'])
+            src_items = _get_batch_items(_load_json(b_path))
+            out_items = _load_json(o_path)
+            issues = check_items(src_items, out_items)
             if issues:
                 entry['items'] = issues
         if len(entry) > 1:
             report.append(entry)
-    out({'checked_batches': sum(1 for r in rows if r[1] != 'todo'),
-         'batches_with_problems': len(report), 'report': report})
-    return 0
+
+    checked = sum(1 for r in rows if r[1] != 'todo')
+
+    coverage_errors = []
+    if getattr(args, 'srt', None) and os.path.exists(args.srt):
+        cues = parse_srt(read_text(args.srt))
+        translated_all = {}
+        for r in rows:
+            out_p = os.path.join(args.out_dir, r[0]['output'])
+            if os.path.exists(out_p):
+                try:
+                    for it in _load_json(out_p):
+                        idx = str(it.get('index', '')).strip()
+                        if idx:
+                            translated_all[idx] = str(it.get('text', ''))
+                except Exception:
+                    pass
+        missing_cues = [str(i + 1) for i in range(len(cues)) if str(i + 1) not in translated_all]
+        if missing_cues:
+            coverage_errors.append(f'missing {len(missing_cues)} cues from full movie: {missing_cues[:10]}')
+            critical_count += len(missing_cues)
+
+    status_str = 'error' if critical_count else ('warning' if report else 'ok')
+    out({'checked_batches': checked,
+         'total_batches': len(rows),
+         'batches_with_problems': len(report),
+         'critical_errors': critical_count,
+         'status': status_str,
+         'coverage_errors': coverage_errors,
+         'report': report})
+    return 2 if critical_count else 0
 
 
 def cmd_apply(args):
     cues = parse_srt(read_text(args.srt))
+    manifest, rows = _batch_status(args.out_dir)
+
+    # 1. Automatic strict validation before applying (prevents desynchronization)
+    if not getattr(args, 'no_check', False):
+        critical_issues = []
+        for info, state, problem in rows:
+            if state == 'todo':
+                critical_issues.append(f"{info['output']}: batch not translated yet")
+            elif state in ('broken', 'incomplete'):
+                critical_issues.append(f"{info['output']}: {problem}")
+        if critical_issues and not args.allow_missing:
+            out({
+                'status': 'error',
+                'error': 'Batch validation failed before apply: subtitle desynchronization or missing cues detected!',
+                'critical_count': len(critical_issues),
+                'critical_errors': critical_issues,
+                'hint': 'Fix the batches or use subs_tool.py check for details. Do not merge cues!'
+            })
+            return 2
+
+    # 2. Collect translations from all batch output files
     translated = {}
-    for path in sorted(glob.glob(os.path.join(glob.escape(args.out_dir), 'out_*.json'))):
-        with open(path, encoding='utf-8') as fh:
-            for item in json.load(fh):
-                translated[str(item['index']).strip()] = str(item.get('text', ''))
+    for info in manifest.get('batches', []):
+        path = os.path.join(args.out_dir, info.get('output', ''))
+        if os.path.exists(path):
+            try:
+                for item in _load_json(path):
+                    idx = str(item.get('index', '')).strip()
+                    if idx:
+                        translated[idx] = str(item.get('text', ''))
+            except Exception:
+                pass
+
+    if not translated:
+        for path in sorted(glob.glob(os.path.join(glob.escape(args.out_dir), 'out_*.json'))):
+            with open(path, encoding='utf-8') as fh:
+                for item in json.load(fh):
+                    idx = str(item.get('index', '')).strip()
+                    if idx:
+                        translated[idx] = str(item.get('text', ''))
+
     missing = [str(i + 1) for i in range(len(cues)) if str(i + 1) not in translated]
     if missing and not args.allow_missing:
-        out({'error': 'missing translations', 'missing_count': len(missing), 'missing': missing[:50]})
+        out({'status': 'error', 'error': 'missing translations', 'missing_count': len(missing), 'missing': missing[:50]})
         return 2
+
+    # 3. Assemble cues: NEVER silently drop empty cues!
     result = []
+    dropped_cues = []
+    empty_errors = []
     for i, cue in enumerate(cues):
-        text = translated.get(str(i + 1))
-        lines = [l.rstrip() for l in (text if text is not None else cue.text).replace('\r', '').split('\n')]
+        idx_str = str(i + 1)
+        text = translated.get(idx_str)
+        if text is None:
+            if args.allow_missing:
+                text = cue.text
+            else:
+                out({'status': 'error', 'error': f'Missing translation for cue {idx_str}'})
+                return 2
+
+        lines = [l.rstrip() for l in text.replace('\r', '').split('\n')]
         lines = [l for l in lines if l.strip()]
         if not lines:
+            src_clean = '\n'.join(l for l in cue.text.split('\n') if not l.lstrip().startswith('{')).strip()
+            if src_clean and not getattr(args, 'allow_empty', False):
+                empty_errors.append({'cue': idx_str, 'source': src_clean[:60]})
+                continue
+            if not getattr(args, 'allow_empty', False) and not src_clean:
+                # Source was also blank, safe to omit
+                continue
+            dropped_cues.append(idx_str)
             continue
         result.append(Cue(start=cue.start, end=cue.end, lines=lines, coords=cue.coords))
+
+    if empty_errors:
+        out({
+            'status': 'error',
+            'error': f'{len(empty_errors)} cue(s) have empty translations while source has text! '
+                     f'Silently dropping them causes off-by-one subtitle desynchronization. '
+                     f'Fix the translation or specify --allow-empty if intentional.',
+            'empty_cues': empty_errors[:20]
+        })
+        return 2
+
+    if len(result) != len(cues) and not args.allow_missing and not getattr(args, 'allow_empty', False):
+        out({
+            'status': 'error',
+            'error': f'Result cue count ({len(result)}) does not match source count ({len(cues)})! '
+                     f'Dropped cues: {dropped_cues[:20]}. Desynchronization prevented.'
+        })
+        return 2
+
     if args.stamp:
         result = add_stamp(result, args.stamp)
     with open(args.output, 'w', encoding='utf-8', newline='') as fh:
@@ -643,11 +823,16 @@ def main():
 
     p = sub.add_parser('status'); p.add_argument('--out-dir', required=True); p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser('check'); p.add_argument('--out-dir', required=True); p.set_defaults(func=cmd_check)
+    p = sub.add_parser('check'); p.add_argument('--out-dir', required=True)
+    p.add_argument('--srt', help='source SRT file to verify full movie coverage')
+    p.set_defaults(func=cmd_check)
 
     p = sub.add_parser('apply'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
     p.add_argument('-o', '--output', required=True); p.add_argument('--stamp', default='')
-    p.add_argument('--allow-missing', action='store_true'); p.set_defaults(func=cmd_apply)
+    p.add_argument('--allow-missing', action='store_true')
+    p.add_argument('--no-check', action='store_true', help='skip batch validation check')
+    p.add_argument('--allow-empty', action='store_true', help='allow empty cue translations without failing')
+    p.set_defaults(func=cmd_apply)
 
     p = sub.add_parser('frames'); p.add_argument('srt'); p.add_argument('video')
     p.add_argument('--index', required=True, help='subtitle numbers, e.g. 12,40')

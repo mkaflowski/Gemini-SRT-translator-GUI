@@ -121,28 +121,38 @@ Tell the user how many batches are done and ask whether to **continue** (default
 
    Use the context so that a sentence started or finished across the cut is translated with its full meaning, and so the words fit together at the boundary. For `context_before`, also read your own translation of those lines from the previous `out_NNN.json`, so the continuation matches in wording, gender and formality. **Translate only the `translate` items.** Never output context items.
 3. For **each** batch in order, save `out_NNN.json` in the same folder: a list of `{"index": "...", "text": "..."}` with exactly the `index` values from `translate`. Write the file with your file-writing tool (not through the shell), UTF-8.
+
+   > [!CRITICAL]
+   > **Strict 1:1 CUE MAPPING (NEVER MERGE CUES):**
+   > - Every single item in `batch_NNN.json` corresponds to a subtitle with a precise timecode on screen.
+   > - You must output **exactly 1 translated item for each source item**, preserving the exact `"index"`.
+   > - **NEVER merge multiple cues into one** (even if a sentence spans multiple cues, e.g. cue 243 and 244).
+   >   - Merging two cues shifts all subsequent translations by -1 (`off-by-one` desync) and leaves an empty cue at the end, ruining the entire movie synchronization (subtitles will appear seconds too early!).
+   >   - If a sentence continues into the next cue, translate the first part in the current cue and the remainder in the next cue.
+   > - **NEVER output empty text (`"text": ""`)** for an item whose original source text is not empty.
+   > - The count of items in `out_NNN.json` must exactly equal the count of `translate` items in `batch_NNN.json`.
 4. Keep a short glossary in `<folder>/.translate_work/glossary.md`: names, nicknames, who uses formal or informal address with whom, the gender of each character, recurring terms. Read it before every batch and update it afterwards, so that batches are consistent with each other.
-5. After the last batch, check the batches for typical slips:
+5. After the last batch, check the batches for typical slips and shifts:
 
    ```
-   python "$S/subs_tool.py" check --out-dir "$W"
+   python "$S/subs_tool.py" check --out-dir "$W" --srt "<source.srt>"
    ```
 
-   It reports, for each batch:
+   It validates:
+   - **Count & index match**: verifies every batch has exact 1:1 item mapping with no merged or omitted cues.
+   - **Shift detection**: detects empty translations that indicate merged cues or desynchronization.
    - Copied `{xx: ...}` reference lines or the missing-subtitle marker.
-   - Empty or untranslated (identical to the source) lines.
-   - More than 2 lines, or lines far over the length limit.
-   - Unbalanced `<i>`/`<b>` tags.
-   - Missing or extra indexes.
+   - Slash breaks (` / `), em dashes (`—`/`–`), unbalanced tags (`<i>`, `<b>`, `<font>`).
+   - Whole-movie coverage against `<source.srt>`.
 
-   Fix any reported items in the `out_NNN.json` files and run `check` again until clean.
+   Fix any reported items in the `out_NNN.json` files and rerun `check` until clean.
 6. Build the file (the timings come from the source):
 
    ```
    python "$S/subs_tool.py" apply "<source.srt>" --out-dir "$W" -o "<output.srt>"
    ```
 
-   If it reports `missing translations`, translate the listed `index` values (add them to the right `out_NNN.json`) and run it again.
+   `apply` runs automated strict validation before assembling. If any batch has count mismatches, missing cues, or empty translations, `apply` will refuse to proceed and will report the desync error.
 7. **Always** add the translator info as the first subtitle, like the GUI does (`# Translated by <model> #`). Use the name of the model that is actually doing the translation, i.e. you (e.g. `Gemini 3.8 Flash`, `Gemini 3 Pro`, `Claude Opus 5.5`), not the name of the tool:
 
    ```
@@ -195,7 +205,10 @@ Run it on the translated file (it rewraps lines that are too long, fixes display
 python "$S/srt_fix.py" "<output.srt>" --source "<source.srt>"
 ```
 
-`--source` is the file you translated from. Some source subtitles (US closed captions) put a dash at the start of every change of speaker, even for one person, and the translation tends to copy it. Fix subs removes such dashes by the Polish convention, and with `--source` it also settles the doubtful ones ("- Smakuje mi. / Trochę słone.") by checking whether the speaker changes in the source.
+Options:
+- `--clean-music`: removes subtitles with music notes / song lyrics (`♪`, `♫`).
+- `--clean-sdh`: removes hearing-impaired sound descriptions and labels.
+- `--source "<source.srt>"`: the file you translated from. Some source subtitles (US closed captions) put a dash at the start of every change of speaker, even for one person, and the translation tends to copy it. Fix subs removes such dashes by the Polish convention, and with `--source` it also settles the doubtful ones ("- Smakuje mi. / Trochę słone.") by checking whether the speaker changes in the source.
 
 > [!NOTE]
 > If the user requested to keep/preserve timings ("nie ruszaj czasów", "zachowaj czasy"), pass `--no-timing`:
