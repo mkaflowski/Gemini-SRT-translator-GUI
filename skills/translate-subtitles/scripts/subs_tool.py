@@ -13,8 +13,10 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
           [--context 10 --context-after 5]   with read-only context from the neighbouring batches
           [--force]                 (refuses to overwrite started work without it)
   status --out-dir DIR              which batches are done / still to translate (for resuming)
-  check --out-dir DIR               find slips in translated batches: copied {xx: ...} lines or
-                                    markers, untranslated or empty lines, >2 lines, broken tags
+  check --out-dir DIR [--srt SRC]   find slips in translated batches: copied {xx: ...} lines or
+                                    markers, untranslated or empty lines, >2 lines, broken tags,
+                                    "src" anchors that do not match their cue (shifted text) and
+                                    runs of cues that look shifted by one (heuristic)
   apply <srt> --out-dir DIR -o OUT  build the translated SRT from DIR/out_001.json ... (timings from <srt>)
           [--stamp "# Translated by ... #"]
   frames <srt> <video> --index 12,40 --out-dir DIR
@@ -348,8 +350,198 @@ def _batch_status(out_dir):
             rows.append((info, 'incomplete', f'empty translation at cues {empties[:10]} (merged cues / shift desync risk!)'))
             continue
 
+        bad = anchor_mismatches(src_items, got_data)
+        if bad:
+            first = bad[0]
+            hint = f" - it is the text of cue {first['looks_like']}" if first.get('looks_like') else ''
+            rows.append((info, 'incomplete',
+                         f"src anchor mismatch at cues {[b['index'] for b in bad][:10]}: translations are "
+                         f"shifted against their cues from cue {first['index']}{hint}. Retranslate from there."))
+            continue
+
         rows.append((info, 'done', ''))
     return manifest, rows
+
+
+# --------------------------------------------------------------------------- #
+# Shift (desync) detection.
+#
+# A model writes "index" as a counter, so after merging or splitting a cue it can keep
+# numbering correctly while every text sits one cue off. Two guards:
+#  1. the "src" anchor: every output item repeats the first words of its source cue,
+#     so a text written for another cue shows up as an exact mismatch;
+#  2. a heuristic for outputs without anchors: in a run of cues, a translation that
+#     fits the neighbouring source cue better than its own one (length, numbers,
+#     names, final punctuation, dialogue dashes, italics) means the run is shifted.
+
+_WORD_RE = re.compile(r'[^\W_]+', re.UNICODE)
+ANCHOR_WORDS = 3
+
+
+def _main_text(text):
+    """Source text without the {xx: ...} reference lines of a merged file."""
+    return '\n'.join(l for l in str(text).split('\n') if not l.lstrip().startswith('{'))
+
+
+def _words(text):
+    return _WORD_RE.findall(_TAG_RE.sub(' ', str(text)).lower())
+
+
+def anchor_of(src_text, n=ANCHOR_WORDS):
+    """The expected "src" anchor: the first n words of the cue's main text."""
+    return ' '.join(_words(_main_text(src_text))[:n])
+
+
+def _anchor_fits(anchor_words, src_text):
+    words = _words(_main_text(src_text)) or _words(src_text)
+    if not words:
+        return not anchor_words
+    n = len(anchor_words)
+    if anchor_words == words[:n]:
+        return True
+    # tolerate a skipped speaker label or a leading word ("JOHN: Wow" written as "Wow")
+    return any(anchor_words == words[k:k + n] for k in range(1, min(4, len(words) - n + 1)))
+
+
+def anchor_mismatches(src_items, out_items):
+    """Items whose "src" anchor does not match their own source cue.
+    Items without a "src" field are not checked (old outputs)."""
+    src_list = [(str(i['index']).strip(), i.get('text', '')) for i in src_items]
+    pos = {idx: k for k, (idx, _) in enumerate(src_list)}
+    bad = []
+    for item in out_items:
+        if 'src' not in item:
+            continue
+        idx = str(item.get('index', '')).strip()
+        k = pos.get(idx)
+        if k is None:
+            continue
+        anchor = _words(item.get('src', ''))
+        if not anchor:
+            if _words(_main_text(src_list[k][1])):
+                bad.append({'index': idx, 'src': item.get('src', ''), 'expected': anchor_of(src_list[k][1])})
+            continue
+        if _anchor_fits(anchor, src_list[k][1]):
+            continue
+        entry = {'index': idx, 'src': item.get('src', ''), 'expected': anchor_of(src_list[k][1])}
+        for off in (1, -1, 2, -2, 3, -3):
+            j = k + off
+            if 0 <= j < len(src_list) and _anchor_fits(anchor, src_list[j][1]):
+                entry['looks_like'] = src_list[j][0]
+                break
+        bad.append(entry)
+    return bad
+
+
+_NUM_RE = re.compile(r'\d+')
+_CAP_RE = re.compile(r'[A-Z][a-z]{2,}')
+_SENT_END_RE = re.compile(r'[.!?…:]["\'»”)\]]*$')
+
+
+def _names(raw):
+    """Capitalised words that do not start a sentence (likely names), as 4-letter stems,
+    so that inflected forms in the translation still match (John -> Johna)."""
+    names, sentence_start = set(), True
+    for tok in _TAG_RE.sub(' ', raw).split():
+        word = tok.strip('-"\'(«“[')
+        if not sentence_start and _CAP_RE.match(word):
+            names.add(word[:4])
+        sentence_start = tok == '-' or bool(_SENT_END_RE.search(tok))
+    return names
+
+
+def _plain(text):
+    return re.sub(r'\s+', ' ', _TAG_RE.sub('', str(text))).strip()
+
+
+def _end_class(text):
+    t = _plain(text).rstrip('"\'»” )]')
+    if not t:
+        return ''
+    if t.endswith(('...', '…')):
+        return '…'
+    last = t[-1]
+    return {'?': '?', '؟': '?', '¿': '?', '!': '!', '.': '.', '。': '.', ',': ',', '،': ','}.get(last, 'w')
+
+
+def _features(text, main=True):
+    raw = _main_text(text) if main else str(text)
+    plain = _plain(raw)
+    lines = [l for l in raw.split('\n') if l.strip()]
+    return {
+        'len': len(plain),
+        'end': _end_class(raw),
+        'nums': set(_NUM_RE.findall(plain)),
+        'names': _names(raw),
+        'dialog': sum(1 for l in lines if _plain(l).startswith('-')) >= 2,
+        'italic': '<i>' in raw.lower(),
+    }
+
+
+def _similarity(t, s, ratio):
+    """How well translation features t fit source features s (higher is better)."""
+    import math
+    score = -abs(math.log((t['len'] + 8) / (s['len'] + 8)) - ratio) * 2.5
+    if t['end'] and s['end']:
+        if t['end'] == s['end']:
+            score += 0.3
+        elif '?' in (t['end'], s['end']) or '!' in (t['end'], s['end']):
+            score -= 0.3
+    if t['nums'] or s['nums']:
+        score += 1.0 if t['nums'] == s['nums'] else -0.7
+    if s['names']:
+        found = sum(1 for n in s['names'] if n in t['plain'])
+        score += min(found, 2) * 0.6
+    score += 0.3 if t['dialog'] == s['dialog'] else -0.3
+    score += 0.2 if t['italic'] == s['italic'] else -0.3
+    return score
+
+
+def shift_suspects(src_items, out_items, window=6, margin=0.35, majority=0.75):
+    """Runs of cues whose translations fit the neighbouring source cues better than
+    their own: [{'from': idx, 'to': idx, 'offset': +1/-1, 'gain': float}].
+    offset +1 means cue N carries the translation of cue N+1 (subtitles come too early)."""
+    import math
+    import statistics
+    by_idx = {str(i.get('index', '')).strip(): str(i.get('text', '')) for i in out_items}
+    pairs = [(str(i['index']).strip(), i.get('text', '')) for i in src_items]
+    pairs = [(idx, s, by_idx[idx]) for idx, s in pairs if idx in by_idx and _plain(_main_text(s))]
+    n = len(pairs)
+    if n < window + 2:
+        return []
+    src_f = [_features(s) for _, s, _ in pairs]
+    out_f = []
+    for _, _, t in pairs:
+        f = _features(t, main=False)
+        f['plain'] = _plain(t)
+        out_f.append(f)
+    ratio = statistics.median(math.log((t['len'] + 8) / (s['len'] + 8)) for t, s in zip(out_f, src_f))
+    own = [_similarity(out_f[k], src_f[k], ratio) for k in range(n)]
+    runs = []
+    for off in (1, -1):
+        gain = [(_similarity(out_f[k], src_f[k + off], ratio) - own[k]) if 0 <= k + off < n else None
+                for k in range(n)]
+        flagged = [False] * n
+        for start in range(0, n - window + 1):
+            win = gain[start:start + window]
+            if any(g is None for g in win):
+                continue
+            if sum(win) / window > margin and sum(1 for g in win if g > 0) >= majority * window:
+                for k in range(start, start + window):
+                    flagged[k] = True
+        k = 0
+        while k < n:
+            if not flagged[k]:
+                k += 1
+                continue
+            j = k
+            while j + 1 < n and flagged[j + 1]:
+                j += 1
+            seg = [g for g in gain[k:j + 1] if g is not None]
+            runs.append({'from': pairs[k][0], 'to': pairs[j][0], 'offset': off,
+                         'gain': round(sum(seg) / len(seg), 2)})
+            k = j + 1
+    return sorted(runs, key=lambda r: int(r['from']) if r['from'].isdigit() else 0)
 
 
 def cmd_status(args):
@@ -433,6 +625,15 @@ def cmd_check(args):
             issues = check_items(src_items, out_items)
             if issues:
                 entry['items'] = issues
+            if out_items and not any(isinstance(i, dict) and 'src' in i for i in out_items):
+                entry['warnings'] = ['no "src" anchors: an exact shift check is not possible for this batch']
+            suspects = shift_suspects(src_items, out_items)
+            if suspects:
+                entry['shift_suspects'] = [
+                    dict(s, hint=f"cues {s['from']}-{s['to']} look like the translations of the cues "
+                                 f"{'after' if s['offset'] > 0 else 'before'} them: compare them with the "
+                                 f"source and, if shifted, retranslate the run")
+                    for s in suspects]
         if len(entry) > 1:
             report.append(entry)
 
@@ -520,6 +721,7 @@ def cmd_apply(args):
     result = []
     dropped_cues = []
     empty_errors = []
+    blank_source = 0  # cues with no text in the source either: nothing to show, nothing shifts
     for i, cue in enumerate(cues):
         idx_str = str(i + 1)
         text = translated.get(idx_str)
@@ -537,12 +739,13 @@ def cmd_apply(args):
             if src_clean and not getattr(args, 'allow_empty', False):
                 empty_errors.append({'cue': idx_str, 'source': src_clean[:60]})
                 continue
-            if not getattr(args, 'allow_empty', False) and not src_clean:
-                # Source was also blank, safe to omit
+            if not src_clean:
+                blank_source += 1  # source was also blank, safe to omit
                 continue
             dropped_cues.append(idx_str)
             continue
         result.append(Cue(start=cue.start, end=cue.end, lines=lines, coords=cue.coords))
+    expected = len(cues) - blank_source
 
     if empty_errors:
         out({
@@ -554,10 +757,10 @@ def cmd_apply(args):
         })
         return 2
 
-    if len(result) != len(cues) and not args.allow_missing and not getattr(args, 'allow_empty', False):
+    if len(result) != expected and not args.allow_missing and not getattr(args, 'allow_empty', False):
         out({
             'status': 'error',
-            'error': f'Result cue count ({len(result)}) does not match source count ({len(cues)})! '
+            'error': f'Result cue count ({len(result)}) does not match source count ({expected})! '
                      f'Dropped cues: {dropped_cues[:20]}. Desynchronization prevented.'
         })
         return 2

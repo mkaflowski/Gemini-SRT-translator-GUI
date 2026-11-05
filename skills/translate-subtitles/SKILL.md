@@ -120,7 +120,15 @@ Tell the user how many batches are done and ask whether to **continue** (default
    - `context_after`: the first 5 subtitles of the next batch, **read-only**.
 
    Use the context so that a sentence started or finished across the cut is translated with its full meaning, and so the words fit together at the boundary. For `context_before`, also read your own translation of those lines from the previous `out_NNN.json`, so the continuation matches in wording, gender and formality. **Translate only the `translate` items.** Never output context items.
-3. For **each** batch in order, save `out_NNN.json` in the same folder: a list of `{"index": "...", "text": "..."}` with exactly the `index` values from `translate`. Write the file with your file-writing tool (not through the shell), UTF-8.
+3. For **each** batch in order, save `out_NNN.json` in the same folder: a list of `{"index": "...", "src": "...", "text": "..."}` with exactly the `index` values from `translate`. Write the file with your file-writing tool (not through the shell), UTF-8.
+
+   **`src` is the anchor:** the first 3 words of that item's source `text`, copied as they are (skip `{xx: ...}` reference lines; for a cue shorter than 3 words copy all of it). Write `index` and `src` first, looking at the source item, and only then its translation. Example for source `{"index": "280", "text": "John: Wow."}`:
+
+   ```json
+   {"index": "280", "src": "John: Wow.", "text": "Wow."}
+   ```
+
+   The anchor ties every translation to its own cue: `check` and `apply` compare it with the source, so a translation written under the wrong number is caught at once, together with the cue where the shift starts.
 
    > [!CRITICAL]
    > **Strict 1:1 CUE MAPPING (NEVER MERGE CUES):**
@@ -131,6 +139,7 @@ Tell the user how many batches are done and ask whether to **continue** (default
    >   - If a sentence continues into the next cue, translate the first part in the current cue and the remainder in the next cue.
    > - **NEVER output empty text (`"text": ""`)** for an item whose original source text is not empty.
    > - The count of items in `out_NNN.json` must exactly equal the count of `translate` items in `batch_NNN.json`.
+   > - The count alone does not prove anything: merging two cues and later splitting another one gives the right count with everything in between shifted. That is what the `src` anchor is for.
 4. Keep a short glossary in `<folder>/.translate_work/glossary.md`: names, nicknames, who uses formal or informal address with whom, the gender of each character, recurring terms. Read it before every batch and update it afterwards, so that batches are consistent with each other.
 5. After the last batch, check the batches for typical slips and shifts:
 
@@ -140,19 +149,23 @@ Tell the user how many batches are done and ask whether to **continue** (default
 
    It validates:
    - **Count & index match**: verifies every batch has exact 1:1 item mapping with no merged or omitted cues.
-   - **Shift detection**: detects empty translations that indicate merged cues or desynchronization.
+   - **Anchors** (`src anchor mismatch`, an error): a `src` that does not match its own source cue. The report gives the first wrong cue and, when it finds one, the cue whose text it really is (`it is the text of cue 281`).
+   - **Shift suspects** (`shift_suspects`, a warning): runs of cues whose translations fit the neighbouring source cues better than their own (by length, numbers, names, `?`/`!`, dialogue dashes, italics). `offset: 1` means each cue carries the next cue's translation, so the subtitles come too early. This also works for batches without anchors.
+   - **Empty translations** for a source cue with text (merged cues).
    - Copied `{xx: ...}` reference lines or the missing-subtitle marker.
    - Slash breaks (` / `), em dashes (`—`/`–`), unbalanced tags (`<i>`, `<b>`, `<font>`).
    - Whole-movie coverage against `<source.srt>`.
 
    Fix any reported items in the `out_NNN.json` files and rerun `check` until clean.
+
+   **When a shift is reported:** do not patch single cues. Go to the first wrong cue, compare the following items with the source one by one and retranslate (or move the texts back) from there to the end of the batch, with a correct `src` for each. For a `shift_suspects` warning, look at the run first: if the texts really match their own cues (e.g. the translation condenses or reorders a sentence across two cues), it is not a shift and you can go on.
 6. Build the file (the timings come from the source):
 
    ```
    python "$S/subs_tool.py" apply "<source.srt>" --out-dir "$W" -o "<output.srt>"
    ```
 
-   `apply` runs automated strict validation before assembling. If any batch has count mismatches, missing cues, or empty translations, `apply` will refuse to proceed and will report the desync error.
+   `apply` runs automated strict validation before assembling. If any batch has count mismatches, missing cues, empty translations or `src` anchors that do not match, `apply` will refuse to proceed and will report the desync error.
 7. **Always** add the translator info as the first subtitle, like the GUI does (`# Translated by <model> #`). Use the name of the model that is actually doing the translation, i.e. you (e.g. `Gemini 3.8 Flash`, `Gemini 3 Pro`, `Claude Opus 5.5`), not the name of the tool:
 
    ```

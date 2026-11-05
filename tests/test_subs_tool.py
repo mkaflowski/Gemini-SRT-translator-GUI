@@ -87,7 +87,71 @@ def test_check_finds_model_slips(work):
     assert "unbalanced <i> tag" in problems["2"]
     assert "3 lines (max 2)" in problems["3"]
     assert any("identical" in p for p in problems["4"])
-    assert any("missing ['5']" in p for r in res["report"] for p in r.get("problems", []))
+    assert any("count mismatch" in p for r in res["report"] for p in r.get("problems", []))
+    assert "missing cue in translation" in problems["5"]
+
+
+def test_src_anchor_catches_shift_with_correct_count(work):
+    """Merge cues 2+3, later split cue 5: the count and indexes are right, the texts are not."""
+    src, w = work
+    run("split", str(src), "--out-dir", str(w), "--batch-size", "100")
+    items = json.loads((w / "batch_001.json").read_text(encoding="utf-8"))["translate"]
+    texts = ["PL " + i["text"] for i in items]
+    texts = texts[:1] + ["PL Line number 2. Line number 3."] + texts[3:5] + ["PL Line", "number 5."] + texts[5:]
+    texts = texts[:len(items)]
+    srcs = [subs_tool.anchor_of(i["text"]) for i in items]
+    srcs = srcs[:2] + srcs[3:5] + [srcs[4]] + srcs[5:]   # anchors follow the texts, as a drifting model writes them
+    srcs = srcs[:len(items)]
+    out = [{"index": i["index"], "src": s, "text": t} for i, s, t in zip(items, srcs, texts)]
+    (w / "out_001.json").write_text(json.dumps(out), encoding="utf-8")
+
+    rc, res = run("check", "--out-dir", str(w))
+    problem = res["report"][0]["problems"][0]
+    assert rc == 2 and "src anchor mismatch" in problem and "from cue 3" in problem
+    assert "text of cue 4" in problem
+    rc, res = run("apply", str(src), "--out-dir", str(w), "-o", str(w / "x.srt"))
+    assert rc == 2 and not (w / "x.srt").exists()
+
+
+def test_src_anchor_tolerates_labels_and_punctuation():
+    source = [{"index": "1", "text": "JOHN: Wow, really?"}, {"index": "2", "text": "<i>I don't know.</i>\n{fr: Je sais pas.}"}]
+    good = [{"index": "1", "src": "Wow, really", "text": "Serio?"}, {"index": "2", "src": "I don't know", "text": "Nie wiem."}]
+    assert subs_tool.anchor_mismatches(source, good) == []
+    bad = [{"index": "1", "src": "I don't", "text": "Nie wiem."}, {"index": "2", "src": "", "text": "x"}]
+    found = subs_tool.anchor_mismatches(source, bad)
+    assert [b["index"] for b in found] == ["1", "2"] and found[0]["looks_like"] == "2"
+
+
+def test_shift_heuristic_without_anchors():
+    import random
+    random.seed(3)
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa".split()
+    src, pl = [], []
+    for k in range(60):
+        n = random.randint(1, 9)
+        end = random.choice(["?", "!", "."])
+        line = " ".join(random.choice(words) for _ in range(n)) + end
+        src.append({"index": str(k + 1), "text": line})
+        pl.append({"index": str(k + 1), "text": "pl " + line})
+    assert subs_tool.shift_suspects(src, pl) == []
+    shifted = [dict(p) for p in pl]
+    for k in range(30, 59):
+        shifted[k]["text"] = pl[k + 1]["text"]
+    runs = subs_tool.shift_suspects(src, shifted)
+    assert runs and runs[0]["offset"] == 1 and 29 <= int(runs[0]["from"]) <= 35
+
+
+def test_apply_keeps_count_check_for_blank_source_cues(tmp_path):
+    w = tmp_path / "w"
+    w.mkdir()
+    srt = tmp_path / "s.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nHi.\n\n2\n00:00:03,000 --> 00:00:04,000\n{fr: Salut.}\n\n"
+                   "3\n00:00:05,000 --> 00:00:06,000\nBye.\n\n", encoding="utf-8")
+    run("split", str(srt), "--out-dir", str(w))
+    (w / "out_001.json").write_text(json.dumps([{"index": "1", "text": "Cześć."}, {"index": "2", "text": ""},
+                                                {"index": "3", "text": "Pa."}]), encoding="utf-8")
+    rc, res = run("apply", str(srt), "--out-dir", str(w), "-o", str(tmp_path / "o.srt"))
+    assert rc == 0 and res["cues"] == 2
 
 
 def test_skill_copies_match_app_modules():
