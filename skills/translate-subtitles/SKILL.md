@@ -221,6 +221,7 @@ Translate the way professional film subtitlers do. The viewer has a moment to re
 - Cultural references: keep the ones a Polish viewer knows; otherwise replace them with a general equivalent (*"He's a real Benedict Arnold"* → *"To zdrajca"*).
 - Units: convert to metric when the exact number doesn't matter (*"a mile away"* → *"półtora kilometra stąd"* or *"kawał drogi stąd"*). Keep the original numbers when they matter for the plot or the joke. Money stays in its currency.
 - Swearing: use natural Polish equivalents of the same strength, varied, not one word for every *fuck*. Don't make it stronger than the original.
+- **Dialogue callbacks and lexical echoes (powtórzenia i riposty):** When one speaker echoes or questions a specific word from the previous cue (e.g. *"Word for that is 'providence'."* → *"The word... The word for what?"*, or *"He's impossible."* → *"Impossible?"*), the translation **MUST** use the exact same Polish word or root in both cues (e.g. *"Właściwe słowo to «opatrzność»."* → *"Słowo... Słowo na co?"*). Translating the first cue with a free idiom or synonym that omits the key word (e.g. *"Mówi się na to..."*) completely breaks the logic of the dialogue exchange.
 
 **Condensing never breaks the cue mapping.** Each subtitle still says what is heard while it is on screen. A sentence spread across two cues may be reworded, but its first part stays in the first cue and the rest in the second (each with its own `src`). Never move content to a cue where it isn't spoken, and never leave a cue empty because "it was said in the previous one".
 
@@ -240,13 +241,14 @@ If the user asks for a **faithful / full translation** ("dokładne tłumaczenie"
 
 ## Step 8: Fix subs
 
-Run it on the translated file (it rewraps lines that are too long, fixes display times and dialogue dashes):
+Run it on the translated file (it rewraps lines that are too long, fixes display times and dialogue dashes, and joins pieces of one sentence into one subtitle):
 
 ```
-python "$S/srt_fix.py" "<output.srt>" --source "<source.srt>"
+python "$S/srt_fix.py" "<output.srt>" --source "<source.srt>" --join-fragments
 ```
 
 Options:
+- `--join-fragments` (**always pass it**, except with `--no-timing`): US closed captions often cut one short sentence into 2–3 quick flashes ("Powiem starym," / "że to stypendium w Nowym Jorku," / "i spadam stąd."). A subtitle that does not end a sentence (no `.`, `?`, `!` at the end, or a pause `...` followed by the same sentence in lower case: "Musisz tak..." / "siorbać i stękać?") is joined with the next one when the pause between them is under 0.3 s, neither is a dialogue (`- `), both are italic or both are not, and together they fit in 2 × 42 characters, 7 s and the reading speed. The joined subtitle spans the time of both, so nothing moves against the speech. This happens only here, on the finished file: during translation cues are never merged (see step 7).
 - `--clean-music`: removes subtitles with music notes / song lyrics (`♪`, `♫`).
 - `--clean-sdh`: removes hearing-impaired sound descriptions and labels.
 - `--source "<source.srt>"`: the file you translated from. Some source subtitles (US closed captions) put a dash at the start of every change of speaker, even for one person, and the translation tends to copy it. Fix subs removes such dashes by the Polish convention, and with `--source` it also settles the doubtful ones ("- Smakuje mi. / Trochę słone.") by checking whether the speaker changes in the source.
@@ -270,11 +272,15 @@ python "$S/subs_tool.py" review-split "<output.srt>" "<source.srt>" --out-dir "$
 For each `review_NNN.json` (items `{index, original, translation}`, plus `cps` when the subtitle is faster to read than 17 characters per second), check the translation like a senior subtitle reviewer. For `gender` doubts you can use `frames` (see "Unclear lines"), but the `index` here is the number in the **translated** file, so pass `<output.srt>` instead of `<source.srt>`. Report only **real** defects:
 
 - `translation`: wrong meaning, lost information, wrong name/number/unit
+- `coherence`: broken dialogue links, lost word callbacks or echoes between speakers (e.g. response queries a word that was dropped or paraphrased away in the preceding cue)
 - `hallucination`: content that is not in the original
 - `spelling`: spelling, grammar, punctuation, typos
 - `unnatural`: correct but not how a native speaker would say it (calque, word order, register)
 - `gender`: wrong grammatical gender, number or formality of the speaker or the person addressed
 - `condense`: too long to read in its time (items with `cps`, characters per second above 17) where a shorter wording keeps the meaning; also a long word-for-word rendering of something a subtitler would say in a few words
+
+> [!IMPORTANT]
+> The AI review must be conducted semantically by reading through dialogue sequences in context (either directly by the assistant model or via reviewer subagents). **Never reduce the review to simple regex or CPS checks**: mechanical checks cannot catch lost dialogue continuity, broken callbacks, or non-sequitur answers.
 
 Subtitles are condensed on purpose: shortening and dropping filler words are **not** defects, as long as the meaning the scene needs is kept (see "Translation style"). Dropping information the story needs **is** a `translation` defect. An acceptable alternative is not a defect. Do not invent defects.
 
