@@ -147,7 +147,7 @@ A subtitle gives **the meaning, intent and tone** of a line, not every word: the
 
 **Budget.** `max_chars` is what a viewer reads in the subtitle's time (17 characters per second, spaces count, tags don't), for both lines together. Over it: condense. Well under it: keep the full meaning, don't cut for the sake of it.
 
-**Drop or shorten** when the scene doesn't need it: filler (*well, you know, I mean, like, okay, uh, look*), stutters and false starts; repetitions (*"No, no, no!"* → *"Nie!"*); subject pronouns (*"Nie wiem"*, not *"Ja nie wiem"*); names and forms of address once it's clear who talks to whom; tag questions (*right?, okay?*) that add nothing; what the picture shows; long-winded wording (*"Do you think you could possibly help me?"* → *"Pomożesz mi?"*).
+**Drop or shorten** when the scene doesn't need it: filler (*well, you know, I mean, like, okay, look*) and hesitation sounds (*uh, um, eee, yyy*: a `...` shows the pause), stutters and false starts; repetitions (*"No, no, no!"* → *"Nie!"*); subject pronouns (*"Nie wiem"*, not *"Ja nie wiem"*); names and forms of address once it's clear who talks to whom; tag questions (*right?, okay?*) that add nothing; what the picture shows; long-winded wording (*"Do you think you could possibly help me?"* → *"Pomożesz mi?"*).
 
 **Never drop:** information the story needs (facts, names on first mention, numbers, times, places), negations and conditions, the point of a joke, irony, threats and promises, the character's register and emotion.
 
@@ -195,6 +195,7 @@ Each item has the `index` used by `review-apply`:
 - `midsentence_capital`: a capital right after a comma, usually a joined cue whose second part started a sentence. Rewrite it as one sentence.
 - `hanging_word`: a line ending in a one-letter word or short preposition (`w`, `z`, `i`, `na`, `do`...); move it to the next line.
 - `too_fast`: condense where no meaning is lost. `spacing`, `quotes`: small typography fixes (`„”` for Polish).
+- `filler`: hesitation sounds (`eee`, `yyy`, `hmm`, `um`, `uh`). Subtitles leave them out: the viewer hears them, and `...` shows the pause (*"Nie, to raczej... eee..."* → *"Nie, to raczej..."*). A cue that is only a hesitation (*"Yyy..."*) is deleted with `{"index": "116", "delete": true}` in `fixes.json`. Keep one only when the hesitation itself matters (a joke about someone fumbling, another character reacting to it), written once as `yyy` or `eee`.
 
 Read every joined cue in context as well: it must read as one natural sentence, without a doubled word, a dangling conjunction or punctuation left from the old break. Put corrections into `$W/fixes.json` and apply them with `review-apply` (step 9).
 

@@ -450,3 +450,21 @@ def test_join_skips_new_sentence_after_comma():
     out, joined = join_sentence_fragments(cues)
     assert joined == 1 and out[0].lines == ["To tylko zarys historii,"]
     assert out[-1].lines == ["Rozmawiałem z Johnem."]
+
+
+def test_verify_flags_fillers_and_review_apply_deletes_cue(tmp_path):
+    srt = tmp_path / "f.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:03,000\nNie, to raczej... eee...\n\n"
+                   "2\n00:00:04,000 --> 00:00:05,000\nYyy...\n\n"
+                   "3\n00:00:06,000 --> 00:00:08,000\nEh, szkoda. Mhm.\n\n"
+                   "4\n00:00:09,000 --> 00:00:11,000\nNo to idziemy.\n", encoding="utf-8")
+    rc, res = run("verify", str(srt))
+    assert [d["index"] for d in res["details"]["filler"]] == ["1", "2"] and res["ok"]
+    fixes = tmp_path / "fixes.json"
+    fixes.write_text(json.dumps([{"index": "1", "text": "Nie, to raczej..."},
+                                 {"index": "2", "delete": True},
+                                 {"index": "4", "text": "No to chodźmy."}]), encoding="utf-8")
+    rc, res = run("review-apply", str(srt), str(fixes))
+    assert res["deleted"] == 1 and "filler" not in res["verify"]
+    text = srt.read_text(encoding="utf-8")
+    assert "Yyy" not in text and "Nie, to raczej..." in text and "No to chodźmy." in text
