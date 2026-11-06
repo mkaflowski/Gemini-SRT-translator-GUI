@@ -396,6 +396,22 @@ def replace_em_dashes(lines: Sequence[str]) -> list[str]:
             for line in lines]
 
 
+_OPEN_QUOTE_RE = re.compile(r'(^|[\s(\[>/-])"(?=\S)')
+_QUESTION_DOTS_RE = re.compile(r"([?!])(?:\.{3}|…)")
+
+
+def polish_typography(lines: Sequence[str]) -> list[str]:
+    """Polska typografia: cudzysłów „…” zamiast "…" i “…”, a po pytajniku
+    i wykrzykniku dwie kropki („Dokąd to?..”), nie trzy."""
+    out = []
+    for line in lines:
+        line = line.replace("“", "„").replace("‟", "„")
+        if '"' in line:
+            line = _OPEN_QUOTE_RE.sub(r"\1„", line).replace('"', "”")
+        out.append(_QUESTION_DOTS_RE.sub(r"\1..", line))
+    return out
+
+
 def has_slash_break(line: str) -> bool:
     plain = TAG_RE.sub("", line)
     return bool(_SLASH_BREAK_RE.search(plain) or _SLASH_EDGE_RE.search(plain))
@@ -482,12 +498,16 @@ def fix_cues(cues: list[Cue], max_len: int = MAX_LEN, max_lines: int = MAX_LINES
     """Popraw wszystkie napisy; zwraca (napisy, statystyki)."""
     stats = {"cues": len(cues), "rewrapped": 0, "too_long_before": 0,
              "too_long_after": 0, "too_many_lines": 0, "dashes_removed": 0,
-             "slashes_fixed": 0, "em_dashes": 0, "problems": []}
+             "slashes_fixed": 0, "em_dashes": 0, "typography": 0, "problems": []}
     for cue in cues:
         plain_dashes = replace_em_dashes(cue.lines)
         if plain_dashes != cue.lines:
             stats["em_dashes"] += 1
             cue.lines = plain_dashes
+        typeset = polish_typography(cue.lines)
+        if typeset != cue.lines:
+            stats["typography"] += 1
+            cue.lines = typeset
         # „Fajnie. / - Słyszałeś?” -> dwie linie (przed myślnikami i łamaniem)
         unslashed = fix_slash_breaks(cue.lines)
         if unslashed != cue.lines:
@@ -524,6 +544,7 @@ MIN_GAP = 83          # 2 klatki przy 24 fps
 LEAD_MAX = 500        # napis może wyprzedzić mowę o pół sekundy
 TRAIL_MAX = 2000      # i zostać na ekranie 2 s po niej
 MERGE_GAP = 500       # przerwa, poniżej której warto rozważyć scalenie
+BORROW_NEXT = 250     # o tyle wolno opóźnić następny napis, gdy ma zapas czasu
 
 
 def char_count(lines: Sequence[str]) -> int:
@@ -578,6 +599,30 @@ def fix_timing(cues: list[Cue], cps: float = CPS, min_duration: int = MIN_DURATI
                 if prev_end is not None:
                     limit_start = max(limit_start, prev_end + min_gap)
                 cue.start = min(cue.start, max(cue.end - need, limit_start, 0))
+
+            # 3) wciąż za krótko: pożycz czas od poprzedniego napisu, jeśli ma go
+            #    więcej, niż sam potrzebuje (kończy się wcześniej, nadal czytelny)
+            if cue.end - cue.start < need and i:
+                prev = cues[i - 1]
+                earliest = max(orig_start - lead, 0)
+                target = max(cue.end - need, earliest)
+                new_prev_end = max(prev.start + needed_duration(prev.lines, cps, min_duration),
+                                   target - min_gap)
+                if new_prev_end < prev.end and new_prev_end + min_gap < cue.start:
+                    prev.end = new_prev_end
+                    cue.start = max(target, prev.end + min_gap)
+
+            # 4) i od następnego: jego początek przesuwa się najwyżej o BORROW_NEXT ms,
+            #    tylko gdy zostaje mu dość czasu na przeczytanie
+            if cue.end - cue.start < need and i + 1 < len(cues):
+                nxt = cues[i + 1]
+                spare = nxt.end - nxt.start - needed_duration(nxt.lines, cps, min_duration)
+                delay = min(BORROW_NEXT, spare, need - (cue.end - cue.start) + min_gap
+                            - (nxt.start - cue.end))
+                if delay > 0:
+                    nxt.start += delay
+                    next_start = nxt.start
+                    cue.end = min(cue.start + need, nxt.start - min_gap)
 
             if cue.end - cue.start >= need:
                 stats["extended"] += 1
@@ -645,12 +690,21 @@ _ELLIPSIS_END_RE = re.compile(r"(\.\.\.|…)[\"'»”)\]]*$")
 _ELLIPSIS_START_RE = re.compile(r"^(<[^>]+>)*(\.\.\.|…)\s*")
 
 
-def _is_fragment(cue: Cue, nxt: Cue) -> bool:
+_FIRST_WORD_RE = re.compile(r"[^\W\d_]+")
+
+
+def _is_fragment(cue: Cue, nxt: Cue, lower_words: set[str] | None = None) -> bool:
     """Napis kończy się w środku zdania: bez kropki, ?, ! na końcu, albo z
     wielokropkiem-pauzą, po którym zdanie toczy się dalej małą literą
-    („Musisz tak...” / „siorbać i stękać?”)."""
+    („Musisz tak...” / „siorbać i stękać?”).  Następny napis zaczynający się
+    wielką literą od zwykłego wyrazu (w filmie pisanego też małą) to nowe
+    zdanie („...zarys historii,” / „Proszę śmiało”) - imiona się nie liczą."""
     lines, nxt_lines = _plain_lines(cue), _plain_lines(nxt)
     if not lines or not nxt_lines:
+        return False
+    first = _FIRST_WORD_RE.search(_ELLIPSIS_START_RE.sub("", nxt_lines[0]))
+    if (first and first.group()[0].isupper() and lower_words is not None
+            and first.group().lower() in lower_words):
         return False
     if not _FRAGMENT_END_RE.search(lines[-1]):
         return True
@@ -717,11 +771,14 @@ def join_sentence_fragments(cues: list[Cue], cps: float = CPS, max_duration: int
     """
     out: list[Cue] = []
     segments: list[list[str]] = []  # dawne linie każdego napisu z `out` (miejsca pauz)
+    # wyrazy, które w filmie występują małą literą - wielka litera to wtedy początek zdania
+    lower_words = {w for c in cues for l in _plain_lines(c)
+                   for w in _FIRST_WORD_RE.findall(l) if w[0].islower()}
     joined = 0
     for cue in cues:
         prev = out[-1] if out else None
         own = [l.strip() for l in cue.lines if l.strip()]
-        if (prev is not None and _is_fragment(prev, cue) and _joinable(prev) and _joinable(cue)
+        if (prev is not None and _is_fragment(prev, cue, lower_words) and _joinable(prev) and _joinable(cue)
                 and _italic(prev) == _italic(cue) and 0 <= cue.start - prev.end < max_gap):
             # „...siorbać” po „tak...” to ta sama pauza - drugi wielokropek odpada
             nxt = list(own)
@@ -909,6 +966,7 @@ def main(argv: Iterable[str] | None = None) -> int:
           f"usuniętych pojedynczych myślników: {stats['dashes_removed']}, "
           f"poprawionych „ / ”: {stats['slashes_fixed']}, "
           f"zamienionych „—”/„–” na „-”: {stats['em_dashes']}, "
+          f"cudzysłowów i „?..”: {stats.get('typography', 0)}, "
           f"myślników rozstrzygniętych według źródła: {stats['dashes_from_source']}",
           file=sys.stderr)
     if "short_before" in stats:
@@ -920,9 +978,13 @@ def main(argv: Iterable[str] | None = None) -> int:
               f"sklejonych kawałków zdań: {stats.get('joined', 0)}", file=sys.stderr)
     for problem in stats["problems"]:
         print(f"[fix] ⚠️  {problem}", file=sys.stderr)
-    if args.show:
-        for problem in stats.get("timing_problems", []):
-            print(f"[fix] ⏱  {problem}", file=sys.stderr)
+    timing_problems = stats.get("timing_problems", [])
+    shown = timing_problems if args.show else timing_problems[:10]
+    for problem in shown:
+        print(f"[fix] ⏱  {problem}", file=sys.stderr)
+    if len(shown) < len(timing_problems):
+        print(f"[fix] ⏱  ... i {len(timing_problems) - len(shown)} więcej (--show pokaże wszystkie)",
+              file=sys.stderr)
     return 0
 
 
