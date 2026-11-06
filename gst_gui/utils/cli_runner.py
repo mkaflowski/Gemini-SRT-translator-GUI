@@ -315,7 +315,9 @@ class CLIRunner:
             f"{stats.get('dashes_removed', 0) + stats.get('dashes_from_source', 0)} lone dialogue dashes removed"
             f"{' (' + str(stats['dashes_from_source']) + ' using the source subtitles)' if stats.get('dashes_from_source') else ''}, "
             f"{stats.get('slashes_fixed', 0)} ' / ' line breaks fixed, "
-            f"{stats.get('em_dashes', 0)} long dashes (— –) replaced")
+            f"{stats.get('em_dashes', 0)} long dashes (— –) replaced, "
+            f"{stats.get('joined', 0)} sentence pieces joined, "
+            f"{stats.get('typography', 0)} quotes / '?..' fixed")
         dash_problems = [p for p in stats.get('problems', []) if 'myślnikiem' in p or 'dwie kwestie' in p]
         if dash_problems:
             self.log(f"✨ {len(dash_problems)} subtitles have a doubtful dialogue dash "

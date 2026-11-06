@@ -401,3 +401,52 @@ def test_join_wraps_at_pauses_and_skips_screen_text(parts, expected):
     from srt_merge import Cue
     cues = [Cue(i * 1000, i * 1000 + 999, p) for i, p in enumerate(parts)]
     assert [c.lines for c in join_sentence_fragments(cues)[0]] == expected
+
+
+def test_check_single_batch_and_batch_size_limit(work):
+    src, w = work
+    rc, res = run("split", str(src), "--out-dir", str(w), "--batch-size", "300")
+    assert rc == 2 and "over 150" in res["error"]
+    run("split", str(src), "--out-dir", str(w), "--batch-size", "5")
+    rc, res = run("check", "--out-dir", str(w), "--batch", "2")
+    assert rc == 2 and "does not exist yet" in res["error"]
+    _translate_batches(w)
+    rc, res = run("check", "--out-dir", str(w), "--batch", "2")
+    assert rc == 0 and res["checked_batches"] == 1
+
+
+@pytest.mark.parametrize("before, after", [
+    ('Morderca? "Jay zamordował', 'Morderca? „Jay zamordował'),
+    ('członka zespołu i ucieka".', 'członka zespołu i ucieka”.'),
+    ('<i>"Never Come Down"</i>', '<i>„Never Come Down”</i>'),
+    ('“Hi”, he said', '„Hi”, he said'),
+    ('Dokąd to?...', 'Dokąd to?..'),
+    ('Serio!…', 'Serio!..'),
+    ("Rock 'n' roll, O'Brien", "Rock 'n' roll, O'Brien"),
+])
+def test_polish_typography(before, after):
+    from srt_fix import polish_typography
+    assert polish_typography([before]) == [after]
+
+
+def test_short_cue_borrows_time_from_neighbours():
+    from srt_fix import fix_timing, needed_duration
+    from srt_merge import Cue
+    cues = [Cue(0, 4000, ["Długi napis, który ma zapas."]), Cue(4100, 4400, ["Co?"]),
+            Cue(4500, 9000, ["Następny napis też ma czasu dość."])]
+    out, stats = fix_timing(cues)
+    co = out[1]
+    assert co.end - co.start >= needed_duration(co.lines)
+    assert out[0].end + 83 <= co.start and co.end + 83 <= out[2].start
+    assert stats["still_short"] == 0
+
+
+def test_join_skips_new_sentence_after_comma():
+    from srt_fix import join_sentence_fragments
+    from srt_merge import Cue
+    cues = [Cue(0, 1500, ["To tylko zarys historii,"]), Cue(1550, 3000, ["Proszę śmiało pytać."]),
+            Cue(5000, 6000, ["proszę bardzo."]),
+            Cue(8000, 9000, ["Rozmawiałem z"]), Cue(9050, 10000, ["Johnem."])]
+    out, joined = join_sentence_fragments(cues)
+    assert joined == 1 and out[0].lines == ["To tylko zarys historii,"]
+    assert out[-1].lines == ["Rozmawiałem z Johnem."]

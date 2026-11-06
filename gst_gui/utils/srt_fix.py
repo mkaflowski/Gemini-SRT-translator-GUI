@@ -27,12 +27,18 @@ import argparse
 import os
 import re
 import sys
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 from typing import Iterable, Sequence
 
 try:
-    from gst_gui.utils.srt_merge import Cue, format_srt, parse_srt, read_text
+    from gst_gui.utils.srt_merge import Cue, format_srt, parse_srt, read_text, clean_cues
 except ImportError:  # uruchamianie pliku bezpośrednio, bez pakietu
-    from srt_merge import Cue, format_srt, parse_srt, read_text  # type: ignore
+    from srt_merge import Cue, format_srt, parse_srt, read_text, clean_cues  # type: ignore
 
 MAX_LEN = 42
 MAX_LINES = 2
@@ -61,7 +67,8 @@ CONJUNCTIONS = {
 }
 
 # nie mogą zaczynać linii (przyklejone do poprzedniego słowa)
-CLITICS = {"się", "sie", "by", "bym", "byś", "byśmy", "byście", "li", "że", "no"}
+# („że" tu nie ma: jako spójnik zaczyna linię - „świadomość, / że jesteś")
+CLITICS = {"się", "sie", "by", "bym", "byś", "byśmy", "byście", "li", "no"}
 
 # nie mogą kończyć linii (przyklejone do następnego słowa)
 PROCLITICS = {"nie", "ani", "ni", "czy", "niech", "niechaj", "niechże"}
@@ -218,7 +225,8 @@ def forbidden_break(words: Sequence[str], i: int) -> str | None:
         return "przyimek oderwany od frazy"
     if p in PROCLITICS:
         return "„nie" + "\"/partykuła oderwana od czasownika"
-    if n in CLITICS:
+    if n in CLITICS and not ends_with_punct(prev):
+        # po przecinku/kropce to nowe zdanie: „Przyszedł, / by pomóc", „Dobra. / No to idziemy"
         return "„się\"/„by\" nie może zaczynać linii"
     if len(p) == 1 and p.isalpha():
         return "jednoliterowe słowo na końcu linii"
@@ -388,6 +396,22 @@ def replace_em_dashes(lines: Sequence[str]) -> list[str]:
             for line in lines]
 
 
+_OPEN_QUOTE_RE = re.compile(r'(^|[\s(\[>/-])"(?=\S)')
+_QUESTION_DOTS_RE = re.compile(r"([?!])(?:\.{3}|…)")
+
+
+def polish_typography(lines: Sequence[str]) -> list[str]:
+    """Polska typografia: cudzysłów „…” zamiast "…" i “…”, a po pytajniku
+    i wykrzykniku dwie kropki („Dokąd to?..”), nie trzy."""
+    out = []
+    for line in lines:
+        line = line.replace("“", "„").replace("‟", "„")
+        if '"' in line:
+            line = _OPEN_QUOTE_RE.sub(r"\1„", line).replace('"', "”")
+        out.append(_QUESTION_DOTS_RE.sub(r"\1..", line))
+    return out
+
+
 def has_slash_break(line: str) -> bool:
     plain = TAG_RE.sub("", line)
     return bool(_SLASH_BREAK_RE.search(plain) or _SLASH_EDGE_RE.search(plain))
@@ -474,12 +498,16 @@ def fix_cues(cues: list[Cue], max_len: int = MAX_LEN, max_lines: int = MAX_LINES
     """Popraw wszystkie napisy; zwraca (napisy, statystyki)."""
     stats = {"cues": len(cues), "rewrapped": 0, "too_long_before": 0,
              "too_long_after": 0, "too_many_lines": 0, "dashes_removed": 0,
-             "slashes_fixed": 0, "em_dashes": 0, "problems": []}
+             "slashes_fixed": 0, "em_dashes": 0, "typography": 0, "problems": []}
     for cue in cues:
         plain_dashes = replace_em_dashes(cue.lines)
         if plain_dashes != cue.lines:
             stats["em_dashes"] += 1
             cue.lines = plain_dashes
+        typeset = polish_typography(cue.lines)
+        if typeset != cue.lines:
+            stats["typography"] += 1
+            cue.lines = typeset
         # „Fajnie. / - Słyszałeś?” -> dwie linie (przed myślnikami i łamaniem)
         unslashed = fix_slash_breaks(cue.lines)
         if unslashed != cue.lines:
@@ -516,6 +544,7 @@ MIN_GAP = 83          # 2 klatki przy 24 fps
 LEAD_MAX = 500        # napis może wyprzedzić mowę o pół sekundy
 TRAIL_MAX = 2000      # i zostać na ekranie 2 s po niej
 MERGE_GAP = 500       # przerwa, poniżej której warto rozważyć scalenie
+BORROW_NEXT = 250     # o tyle wolno opóźnić następny napis, gdy ma zapas czasu
 
 
 def char_count(lines: Sequence[str]) -> int:
@@ -571,6 +600,30 @@ def fix_timing(cues: list[Cue], cps: float = CPS, min_duration: int = MIN_DURATI
                     limit_start = max(limit_start, prev_end + min_gap)
                 cue.start = min(cue.start, max(cue.end - need, limit_start, 0))
 
+            # 3) wciąż za krótko: pożycz czas od poprzedniego napisu, jeśli ma go
+            #    więcej, niż sam potrzebuje (kończy się wcześniej, nadal czytelny)
+            if cue.end - cue.start < need and i:
+                prev = cues[i - 1]
+                earliest = max(orig_start - lead, 0)
+                target = max(cue.end - need, earliest)
+                new_prev_end = max(prev.start + needed_duration(prev.lines, cps, min_duration),
+                                   target - min_gap)
+                if new_prev_end < prev.end and new_prev_end + min_gap < cue.start:
+                    prev.end = new_prev_end
+                    cue.start = max(target, prev.end + min_gap)
+
+            # 4) i od następnego: jego początek przesuwa się najwyżej o BORROW_NEXT ms,
+            #    tylko gdy zostaje mu dość czasu na przeczytanie
+            if cue.end - cue.start < need and i + 1 < len(cues):
+                nxt = cues[i + 1]
+                spare = nxt.end - nxt.start - needed_duration(nxt.lines, cps, min_duration)
+                delay = min(BORROW_NEXT, spare, need - (cue.end - cue.start) + min_gap
+                            - (nxt.start - cue.end))
+                if delay > 0:
+                    nxt.start += delay
+                    next_start = nxt.start
+                    cue.end = min(cue.start + need, nxt.start - min_gap)
+
             if cue.end - cue.start >= need:
                 stats["extended"] += 1
             else:
@@ -625,6 +678,130 @@ def _merge_close_cues(cues: list[Cue], cps: float, min_duration: int,
     return out, merged
 
 
+JOIN_GAP = 300        # fragmenty jednego zdania dzieli zwykle mniej niż 0,3 s
+_FRAGMENT_END_RE = re.compile(r"[.!?…:;♪♫][\"'»”)\]]*$")
+
+
+def _plain_lines(cue: Cue) -> list[str]:
+    return [p for p in (TAG_RE.sub("", l).strip() for l in cue.lines) if p]
+
+
+_ELLIPSIS_END_RE = re.compile(r"(\.\.\.|…)[\"'»”)\]]*$")
+_ELLIPSIS_START_RE = re.compile(r"^(<[^>]+>)*(\.\.\.|…)\s*")
+
+
+_FIRST_WORD_RE = re.compile(r"[^\W\d_]+")
+
+
+def _is_fragment(cue: Cue, nxt: Cue, lower_words: set[str] | None = None) -> bool:
+    """Napis kończy się w środku zdania: bez kropki, ?, ! na końcu, albo z
+    wielokropkiem-pauzą, po którym zdanie toczy się dalej małą literą
+    („Musisz tak...” / „siorbać i stękać?”).  Następny napis zaczynający się
+    wielką literą od zwykłego wyrazu (w filmie pisanego też małą) to nowe
+    zdanie („...zarys historii,” / „Proszę śmiało”) - imiona się nie liczą."""
+    lines, nxt_lines = _plain_lines(cue), _plain_lines(nxt)
+    if not lines or not nxt_lines:
+        return False
+    first = _FIRST_WORD_RE.search(_ELLIPSIS_START_RE.sub("", nxt_lines[0]))
+    if (first and first.group()[0].isupper() and lower_words is not None
+            and first.group().lower() in lower_words):
+        return False
+    if not _FRAGMENT_END_RE.search(lines[-1]):
+        return True
+    if _ELLIPSIS_END_RE.search(lines[-1]):
+        first = next((ch for ch in _ELLIPSIS_START_RE.sub("", nxt_lines[0]) if ch.isalpha()), "")
+        return first.islower()
+    return False
+
+
+def _joinable(cue: Cue) -> bool:
+    """Bez dialogów (myślnik = inna osoba) i bez informacji o tłumaczu."""
+    lines = _plain_lines(cue)
+    if not lines or any(_starts_with_dash(l) for l in lines):
+        return False
+    letters = [ch for ch in "".join(lines) if ch.isalpha()]
+    if len(letters) >= 2 and all(ch.isupper() for ch in letters):
+        return False  # napis ekranowy („KINO WELLFLEET”), nie mowa
+    return not (len(lines) == 1 and lines[0].startswith("#") and lines[0].endswith("#"))
+
+
+def _wrap_joined(segments: list[str], max_len: int) -> tuple[list[str], list[str]]:
+    """Linie sklejonego napisu.  Mieści się w jednej - jedna linia.  Inaczej
+    najlepiej łamać tam, gdzie kończył się dawny kawałek albo linia (tam mówiący
+    robił pauzę), jeśli obie linie się mieszczą i podział nie jest zakazany;
+    w ostateczności zwykłe łamanie Fix subs."""
+    def tidy(text: str) -> str:
+        return re.sub(r"</i>\s+<i>", " ", text, flags=re.IGNORECASE)
+
+    whole = tidy(" ".join(segments))
+    if visible_len(whole) <= max_len:
+        return [whole], []
+    words = whole.split()
+    best = None
+    for k in range(1, len(segments)):
+        top, bottom = tidy(" ".join(segments[:k])), tidy(" ".join(segments[k:]))
+        if visible_len(top) > max_len or visible_len(bottom) > max_len:
+            continue
+        if forbidden_break(words, len(top.split())):
+            continue
+        diff = abs(visible_len(top) - visible_len(bottom))
+        if best is None or diff < best[0]:
+            best = (diff, [top, bottom])
+    if best is not None:
+        return best[1], []
+    return fix_cue_lines([whole], max_len)
+
+
+def _italic(cue: Cue) -> bool:
+    return all(l.lstrip().lower().startswith("<i>") for l in cue.lines if l.strip())
+
+
+def join_sentence_fragments(cues: list[Cue], cps: float = CPS, max_duration: int = MAX_DURATION,
+                            max_len: int = MAX_LEN, max_gap: int = JOIN_GAP) -> tuple[list[Cue], int]:
+    """Sklej kolejne kawałki jednego zdania w jeden napis.
+
+    Napisy w stylu closed captions tną krótkie zdanie na 2–3 błyski
+    („Powiem starym,” / „że to stypendium w Nowym Jorku,” / „i spadam stąd.”).
+    Napis jest doklejany do poprzedniego, gdy poprzedni nie kończy zdania,
+    dzieli je mniej niż ``max_gap`` ms, żaden nie jest dialogiem, oba są
+    (albo oba nie są) kursywą, a razem mieszczą się w 2 liniach, w
+    ``max_duration`` i w prędkości czytania ``cps``.  Czas sklejonego napisu
+    obejmuje oba, więc nic się nie przesuwa względem mowy.
+    Zwraca (napisy, liczba sklejeń).
+    """
+    out: list[Cue] = []
+    segments: list[list[str]] = []  # dawne linie każdego napisu z `out` (miejsca pauz)
+    # wyrazy, które w filmie występują małą literą - wielka litera to wtedy początek zdania
+    lower_words = {w for c in cues for l in _plain_lines(c)
+                   for w in _FIRST_WORD_RE.findall(l) if w[0].islower()}
+    joined = 0
+    for cue in cues:
+        prev = out[-1] if out else None
+        own = [l.strip() for l in cue.lines if l.strip()]
+        if (prev is not None and _is_fragment(prev, cue, lower_words) and _joinable(prev) and _joinable(cue)
+                and _italic(prev) == _italic(cue) and 0 <= cue.start - prev.end < max_gap):
+            # „...siorbać” po „tak...” to ta sama pauza - drugi wielokropek odpada
+            nxt = list(own)
+            if _ELLIPSIS_END_RE.search(_plain_lines(prev)[-1]):
+                nxt[0] = _ELLIPSIS_START_RE.sub(lambda m: m.group(1) or "", nxt[0], count=1)
+            segs = segments[-1] + nxt
+            lines, problems = _wrap_joined(segs, max_len)
+            span = cue.end - prev.start
+            # sklejenie nie może utrudnić czytania: najwyżej `cps` albo tyle, ile
+            # wymagał szybszy z dwóch kawałków (wtedy i tak jest łatwiej - jeden błysk mniej)
+            parts_cps = max(char_count(c.lines) / max(c.end - c.start, 1) * 1000 for c in (prev, cue))
+            if (not problems and len(lines) <= MAX_LINES and span <= max_duration
+                    and char_count(lines) / span * 1000 <= max(cps, parts_cps) + 0.5):
+                prev.lines = lines
+                prev.end = cue.end
+                segments[-1] = segs
+                joined += 1
+                continue
+        out.append(cue)
+        segments.append(own)
+    return out, joined
+
+
 def _write_atomic(path: str, text: str) -> None:
     """Zapis przez plik tymczasowy — przerwany zapis nie zniszczy oryginału."""
     tmp = f"{path}.tmp"
@@ -663,16 +840,24 @@ def fix_srt(path: str, out_path: str | None = None, max_len: int = MAX_LEN,
             newline: str = "\n", timing: bool = True, cps: float = CPS,
             min_duration: int = MIN_DURATION, max_duration: int = MAX_DURATION,
             min_gap: int = MIN_GAP, merge_close: bool = False,
-            source_path: str | None = None) -> tuple[str, dict]:
+            source_path: str | None = None,
+            clean_music: bool = False, clean_sdh: bool = False,
+            join_fragments: bool = True) -> tuple[str, dict]:
     """Popraw plik SRT — domyślnie w miejscu, nadpisując plik wejściowy.
 
     ``source_path`` (napisy, z których tłumaczono) pozwala rozstrzygnąć
     niejasne myślniki dialogowe — patrz ``resolve_dashes_with_source``.
     """
     cues = parse_srt(read_text(path))
+    clean_stats = {}
+    if clean_music or clean_sdh:
+        cues, clean_stats = clean_cues(cues, music=clean_music, sdh=clean_sdh)
     if out_path is None:
         out_path = path
     cues, stats = fix_cues(cues, max_len)
+    if clean_stats:
+        stats["clean_removed"] = clean_stats.get("removed_cues", 0)
+        stats["clean_modified"] = clean_stats.get("cleaned_cues", 0)
     stats["dashes_from_source"] = 0
     if source_path and os.path.exists(source_path):
         # przed czasami — korekta czasów może przesunąć początek napisu
@@ -681,6 +866,12 @@ def fix_srt(path: str, out_path: str | None = None, max_len: int = MAX_LEN,
             stats["problems"] = [p for p in stats["problems"] if not p.startswith("tylko jedna linia")]
             stats["problems"] += [p for p in (fix_lone_dash(c.lines)[1] for c in cues)
                                   if p and p.startswith("tylko jedna linia")]
+    stats["joined"] = 0
+    if timing and join_fragments:
+        # po rozstrzygnięciu myślników (dialog się nie skleja), przed czasami
+        cues, stats["joined"] = join_sentence_fragments(cues, cps=cps, max_duration=max_duration,
+                                                        max_len=max_len)
+        stats["cues"] = len(cues)
     if timing:
         # najpierw łamanie linii, potem czasy - liczba znaków się nie zmienia,
         # ale scalanie napisów korzysta z gotowego łamania
@@ -720,7 +911,16 @@ def main(argv: Iterable[str] | None = None) -> int:
                     help=f"minimalny odstęp między napisami w ms (domyślnie {MIN_GAP})")
     ap.add_argument("--merge-close", action="store_true",
                     help="scalaj za krótki napis z następnym, gdy dzieli je mniej niż 0,5 s")
+    ap.add_argument("--no-join-fragments", dest="join_fragments", action="store_false",
+                    help="nie sklejaj kawałków jednego zdania (domyślnie napis bez kropki na końcu "
+                         f"i następny po mniej niż {JOIN_GAP / 1000:g} s są sklejane, gdy razem się mieszczą)")
+    ap.add_argument("--join-fragments", dest="join_fragments", action="store_true",
+                    help=argparse.SUPPRESS)  # dawna opcja - teraz to domyślne zachowanie
     ap.add_argument("--crlf", action="store_true", help="zapisz z końcami linii CRLF")
+    ap.add_argument("--clean-music", action="store_true",
+                    help="usuń napisy muzyczne z nutkami (teksty piosenek)")
+    ap.add_argument("--clean-sdh", action="store_true",
+                    help="usuń opisy dźwięków i etykiety dla niesłyszących (SDH)")
     ap.add_argument("--source", help="napisy, z których tłumaczono — rozstrzygają niejasne "
                                      "myślniki dialogowe (styl closed captions)")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -749,7 +949,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         min_gap=args.min_gap,
         merge_close=args.merge_close,
         source_path=args.source,
+        clean_music=args.clean_music,
+        clean_sdh=args.clean_sdh,
+        join_fragments=args.join_fragments,
     )
+    if stats.get("clean_removed") or stats.get("clean_modified"):
+        print(f"[fix] usunięto muzyki/SDH: {stats.get('clean_removed', 0)}, "
+              f"oczyszczono: {stats.get('clean_modified', 0)}", file=sys.stderr)
     if args.output == "-" and not args.check:
         sys.stdout.write(stats["text"])
     elif not args.check:
@@ -760,6 +966,7 @@ def main(argv: Iterable[str] | None = None) -> int:
           f"usuniętych pojedynczych myślników: {stats['dashes_removed']}, "
           f"poprawionych „ / ”: {stats['slashes_fixed']}, "
           f"zamienionych „—”/„–” na „-”: {stats['em_dashes']}, "
+          f"cudzysłowów i „?..”: {stats.get('typography', 0)}, "
           f"myślników rozstrzygniętych według źródła: {stats['dashes_from_source']}",
           file=sys.stderr)
     if "short_before" in stats:
@@ -767,12 +974,17 @@ def main(argv: Iterable[str] | None = None) -> int:
               f"wydłużonych {stats['extended']}, bez miejsca {stats['still_short']}; "
               f"skróconych zbyt długich: {stats['trimmed_long']}, "
               f"poprawionych odstępów: {stats['gaps_fixed']}, "
-              f"scalonych: {stats['merged']}", file=sys.stderr)
+              f"scalonych: {stats['merged']}, "
+              f"sklejonych kawałków zdań: {stats.get('joined', 0)}", file=sys.stderr)
     for problem in stats["problems"]:
         print(f"[fix] ⚠️  {problem}", file=sys.stderr)
-    if args.show:
-        for problem in stats.get("timing_problems", []):
-            print(f"[fix] ⏱  {problem}", file=sys.stderr)
+    timing_problems = stats.get("timing_problems", [])
+    shown = timing_problems if args.show else timing_problems[:10]
+    for problem in shown:
+        print(f"[fix] ⏱  {problem}", file=sys.stderr)
+    if len(shown) < len(timing_problems):
+        print(f"[fix] ⏱  ... i {len(timing_problems) - len(shown)} więcej (--show pokaże wszystkie)",
+              file=sys.stderr)
     return 0
 
 

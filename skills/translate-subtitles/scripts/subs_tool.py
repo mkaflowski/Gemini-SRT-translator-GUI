@@ -13,7 +13,7 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
           [--context 10 --context-after 5]   with read-only context from the neighbouring batches
           [--force]                 (refuses to overwrite started work without it)
   status --out-dir DIR              which batches are done / still to translate (for resuming)
-  check --out-dir DIR [--srt SRC]   find slips in translated batches: copied {xx: ...} lines or
+  check --out-dir DIR [--srt SRC]   (--batch N: only out_N.json, right after writing it) find slips in translated batches: copied {xx: ...} lines or
                                     markers, untranslated or empty lines, >2 lines, broken tags,
                                     "src" anchors that do not match their cue (shifted text) and
                                     runs of cues that look shifted by one (heuristic)
@@ -27,8 +27,13 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
                                     replaces an existing stamp instead of adding a second one)
   review-split <translated> <source> --out-dir DIR [--batch-size 150]
                                     pair translation with source by time, for the review
-  review-apply <translated> <fixes.json>
-                                    apply corrected lines [{"index": "12", "text": "..."}], re-wrapped
+  review-apply <translated> <fixes.json> [--force]
+                                    apply corrected lines [{"index": "12", "text": "..."}], re-wrapped;
+                                    refuses when the file changed after review-split
+  verify <srt> [--json-out FILE]    mechanical checks of the finished file (after Fix subs): timing,
+                                    empty cues, line length, reading speed, capital letters left
+                                    mid-sentence by joined cues, one-letter words at line ends,
+                                    tags, spacing, leftovers, mixed quote styles
 
 The merge and fix steps use srt_merge.py / srt_fix.py from this folder
 (copies of the modules used by the Gemini SRT Translator GUI).
@@ -240,7 +245,15 @@ def char_budget(cues, i, cps=CPS):
     return max(BUDGET_MIN, min(budget, MAX_LEN * MAX_LINES))
 
 
+MAX_BATCH = 150  # above this a model loses track of the cues and shifts them (seen at 300)
+
+
 def cmd_split(args):
+    if args.batch_size > MAX_BATCH and not args.large_batches:
+        out({'error': f'batch size {args.batch_size} is over {MAX_BATCH}',
+             'hint': f'long batches are where translations shift against their cues; use '
+                     f'--batch-size 100 (the default) or at most {MAX_BATCH}'})
+        return 2
     cues = parse_srt(read_text(args.srt))
     os.makedirs(args.out_dir, exist_ok=True)
     done = glob.glob(os.path.join(glob.escape(args.out_dir), 'out_*.json'))
@@ -395,7 +408,7 @@ def _batch_status(out_dir):
 #     fits the neighbouring source cue better than its own one (length, numbers,
 #     names, final punctuation, dialogue dashes, italics) means the run is shifted.
 
-_WORD_RE = re.compile(r'[^\W_]+', re.UNICODE)
+_ANCHOR_WORD_RE = re.compile(r'[^\W_]+', re.UNICODE)  # letters and digits
 ANCHOR_WORDS = 3
 
 
@@ -405,7 +418,7 @@ def _main_text(text):
 
 
 def _words(text):
-    return _WORD_RE.findall(_TAG_RE.sub(' ', str(text)).lower())
+    return _ANCHOR_WORD_RE.findall(_TAG_RE.sub(' ', str(text)).lower())
 
 
 def anchor_of(src_text, n=ANCHOR_WORDS):
@@ -633,8 +646,23 @@ def check_items(source, translated, max_len=42):
     return problems
 
 
+def _batch_number(name):
+    m = re.search(r'(\d+)', name or '')
+    return int(m.group(1)) if m else None
+
+
 def cmd_check(args):
     manifest, rows = _batch_status(args.out_dir)
+    only = getattr(args, 'batch', None)
+    if only is not None:
+        # right after one batch: check it alone, before the next one builds on it
+        rows = [r for r in rows if _batch_number(r[0]['output']) == only]
+        if not rows:
+            out({'status': 'error', 'error': f'no batch {only} in {args.out_dir}'})
+            return 2
+        if rows[0][1] == 'todo':
+            out({'status': 'error', 'error': f"{rows[0][0]['output']} does not exist yet"})
+            return 2
     report = []
     critical_count = 0
     for info, state, problem in rows:
@@ -667,7 +695,7 @@ def cmd_check(args):
     checked = sum(1 for r in rows if r[1] != 'todo')
 
     coverage_errors = []
-    if getattr(args, 'srt', None) and os.path.exists(args.srt):
+    if only is None and getattr(args, 'srt', None) and os.path.exists(args.srt):
         cues = parse_srt(read_text(args.srt))
         translated_all = {}
         for r in rows:
@@ -989,6 +1017,9 @@ def cmd_review_split(args):
         with open(path, 'w', encoding='utf-8') as fh:
             json.dump(pairs[start:start + args.batch_size], fh, ensure_ascii=False, indent=1)
         files.append(os.path.basename(path))
+    with open(os.path.join(args.out_dir, REVIEW_META), 'w', encoding='utf-8') as fh:
+        json.dump({'translated': os.path.abspath(args.translated),
+                   'sha256': _file_hash(args.translated)}, fh)
     out({'pairs': len(pairs), 'without_source': sum(1 for p in pairs if not p['original']),
          'batches': files, 'merged_source': parse_merged_name(args.source)})
 
@@ -1006,7 +1037,132 @@ def cmd_clean(args):
          'removed_examples': removed_examples})
 
 
+def _file_hash(path):
+    import hashlib
+    with open(path, 'rb') as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+REVIEW_META = 'review_meta.json'
+
+
+# Polish words that must not end a line (typography: a one-letter word or a short
+# preposition is moved to the next line together with the word it belongs to).
+_HANGING = {'a', 'i', 'o', 'u', 'w', 'z', 'we', 'ze', 'na', 'do', 'od', 'po', 'za', 'ku'}
+_UPPER = 'A-ZĄĆĘŁŃÓŚŹŻ'
+_LOWER = 'a-ząćęłńóśźż'
+_MIDCAP_RE = re.compile(rf'[,;]\s+([{_UPPER}][{_LOWER}]+)')
+_WORD_RE = re.compile(rf'[{_UPPER}{_LOWER}]+')
+
+
+def verify_cues(cues, source=None, max_len=MAX_LEN, cps_limit=CPS):
+    """Mechanical checks of a finished subtitle file (after Fix subs or review-apply).
+
+    Returns a dict of issue lists; every issue has the 1-based `index` used by
+    review-apply and the cue `text`, so a correction can go straight to fixes.json.
+    """
+    tag = re.compile(r'</?[a-zA-Z][^>]*>')
+    plain = lambda s: tag.sub('', s)
+    lower_words = {}
+    for c in cues:
+        for w in _WORD_RE.findall(plain(c.text)):
+            if w[0].islower():
+                lower_words[w] = lower_words.get(w, 0) + 1
+    issues = {k: [] for k in (
+        'timing', 'empty', 'too_many_lines', 'line_too_long', 'too_fast', 'midsentence_capital',
+        'hanging_word', 'tags', 'spacing', 'leftovers', 'quotes')}
+
+    def add(kind, i, cue, note=''):
+        item = {'index': str(i), 'text': cue.text}
+        if note:
+            item['note'] = note
+        issues[kind].append(item)
+
+    quote_styles = {'„”': 0, '""': 0}
+    prev = None
+    for i, c in enumerate(cues, 1):
+        if len(c.lines) == 1 and STAMP_RE.match(c.lines[0].strip()):
+            prev = c
+            continue
+        text = plain(c.text)
+        if c.end <= c.start:
+            add('timing', i, c, 'end before start')
+        if prev is not None and c.start < prev.end:
+            add('timing', i, c, f'overlaps the previous cue by {prev.end - c.start} ms')
+        prev = c
+        if not text.strip():
+            add('empty', i, c)
+            continue
+        if len(c.lines) > MAX_LINES:
+            add('too_many_lines', i, c, f'{len(c.lines)} lines')
+        for line in c.lines:
+            n = len(plain(line))
+            if n > max_len:
+                add('line_too_long', i, c, f'{n} characters')
+                break
+        cps = char_count(c.lines) / max(c.duration, 1) * 1000
+        if cps > cps_limit + BUDGET_TOLERANCE:
+            add('too_fast', i, c, f'{cps:.1f} characters per second')
+        # a capital letter after a comma: typical leftover of Fix subs joining two pieces
+        # ("...historii, Proszę śmiało"). Names are skipped: the word must appear in
+        # lower case elsewhere in the file.
+        for m in _MIDCAP_RE.finditer(' '.join(plain(l) for l in c.lines)):
+            word = m.group(1)
+            if lower_words.get(word[0].lower() + word[1:], 0):
+                add('midsentence_capital', i, c, f'"{word}" after a comma')
+                break
+        for line in c.lines[:-1]:
+            words = plain(line).split()
+            if words and words[-1].lower() in _HANGING:
+                add('hanging_word', i, c, f'line ends with "{words[-1]}"')
+                break
+        for t in ('i', 'b', 'u'):
+            if len(re.findall(rf'<{t}>', c.text)) != len(re.findall(rf'</{t}>', c.text)):
+                add('tags', i, c, f'unbalanced <{t}>')
+        for line in c.lines:
+            pl = plain(line)
+            if re.search(r'  |\s[,.?!:;](?!\.)|[,;:](?=[^\s\d"”»])|(?<!\.)[.?!](?=[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż])|,,|\?\?\?|!!!', pl):
+                add('spacing', i, c, 'double space, space before punctuation or none after it')
+                break
+        if re.search(r'\{[a-z]{2}:|BRAK NAPISÓW| / |[—–]', c.text):
+            add('leftovers', i, c, 'reference line, marker, slash break or long dash')
+        quote_styles['„”'] += len(re.findall('[„”]', text))
+        quote_styles['""'] += text.count('"')
+    if quote_styles['„”'] and quote_styles['""']:
+        issues['quotes'].append({'note': 'mixed quote styles', 'counts': quote_styles})
+    result = {k: v for k, v in issues.items() if v}
+    return result
+
+
+def cmd_verify(args):
+    cues = parse_srt(read_text(args.srt))
+    found = verify_cues(cues, max_len=args.max_len)
+    limit = args.limit
+    report = {'file': os.path.abspath(args.srt), 'cues': len(cues),
+              'issues': {k: len(v) for k, v in found.items()},
+              'ok': not any(k in found for k in ('timing', 'empty', 'too_many_lines', 'line_too_long',
+                                                    'tags', 'leftovers'))}
+    report['details'] = {k: v[:limit] for k, v in found.items()}
+    if args.json_out:
+        with open(args.json_out, 'w', encoding='utf-8') as fh:
+            json.dump(found, fh, ensure_ascii=False, indent=1)
+        report['all_details'] = os.path.abspath(args.json_out)
+    out(report)
+
+
 def cmd_review_apply(args):
+    meta_path = os.path.join(os.path.dirname(os.path.abspath(args.fixes)), REVIEW_META)
+    if os.path.exists(meta_path) and not args.force:
+        with open(meta_path, encoding='utf-8') as fh:
+            meta = json.load(fh)
+        if (os.path.abspath(args.translated) == meta.get('translated')
+                and _file_hash(args.translated) != meta.get('sha256')):
+            out({'error': 'the subtitle file changed after review-split (another tool or session edited '
+                          'it), so the review indexes may point at different cues. Run review-split '
+                          'again and redo the review on the current file, or pass --force if you are '
+                          'sure the changes do not move cues.',
+                 'translated': os.path.abspath(args.translated)})
+            return 2
     cues = parse_srt(read_text(args.translated))
     with open(args.fixes, encoding='utf-8') as fh:
         fixes = json.load(fh)
@@ -1028,8 +1184,14 @@ def cmd_review_apply(args):
         fh.write(format_srt(cues))
     # corrections change text lengths, so display times are fixed again afterwards
     _, fix_stats = fix_srt(args.translated, timing=not getattr(args, 'no_timing', False))
+    if os.path.exists(meta_path):
+        with open(meta_path, 'w', encoding='utf-8') as fh:  # the file is ours again after applying
+            json.dump({'translated': os.path.abspath(args.translated),
+                       'sha256': _file_hash(args.translated)}, fh)
+    found = verify_cues(parse_srt(read_text(args.translated)))
     out({'applied': len(applied), 'changes': applied,
-         'fix': {k: fix_stats.get(k, 0) for k in ('rewrapped', 'extended', 'gaps_fixed')}})
+         'fix': {k: fix_stats.get(k, 0) for k in ('rewrapped', 'extended', 'gaps_fixed')},
+         'verify': {k: len(v) for k, v in found.items()}})
 
 
 def main():
@@ -1053,12 +1215,14 @@ def main():
     p.add_argument('--context-after', type=int, default=5, help='read-only cues after each batch')
     p.add_argument('--fixed', action='store_true', help='cut every N cues instead of at scene breaks')
     p.add_argument('--force', action='store_true', help='start over even if translated batches exist')
+    p.add_argument('--large-batches', action='store_true', help=argparse.SUPPRESS)  # only if the user insists
     p.set_defaults(func=cmd_split)
 
     p = sub.add_parser('status'); p.add_argument('--out-dir', required=True); p.set_defaults(func=cmd_status)
 
     p = sub.add_parser('check'); p.add_argument('--out-dir', required=True)
     p.add_argument('--srt', help='source SRT file to verify full movie coverage')
+    p.add_argument('--batch', type=int, help='check only this batch (e.g. 3 for out_003.json), right after writing it')
     p.set_defaults(func=cmd_check)
 
     p = sub.add_parser('apply'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
@@ -1086,7 +1250,14 @@ def main():
     p.set_defaults(func=cmd_review_split)
 
     p = sub.add_parser('review-apply'); p.add_argument('translated'); p.add_argument('fixes'); p.add_argument('--no-timing', action='store_true', help='do not alter display times')
+    p.add_argument('--force', action='store_true', help='apply even if the file changed after review-split')
     p.set_defaults(func=cmd_review_apply)
+
+    p = sub.add_parser('verify'); p.add_argument('srt')
+    p.add_argument('--max-len', type=int, default=MAX_LEN)
+    p.add_argument('--limit', type=int, default=15, help='examples shown per issue type')
+    p.add_argument('--json-out', help='write every issue to this JSON file')
+    p.set_defaults(func=cmd_verify)
 
     args = ap.parse_args()
     return args.func(args) or 0
