@@ -1053,6 +1053,10 @@ _UPPER = 'A-ZĄĆĘŁŃÓŚŹŻ'
 _LOWER = 'a-ząćęłńóśźż'
 _MIDCAP_RE = re.compile(rf'[,;]\s+([{_UPPER}][{_LOWER}]+)')
 _WORD_RE = re.compile(rf'[{_UPPER}{_LOWER}]+')
+# hesitation sounds ("eee", "yyy", "hmm", "um", "uh"): subtitles normally leave them out,
+# the viewer hears them and a "..." shows the pause. "Eh", "ech", "mhm" carry meaning: not listed.
+_FILLER_RE = re.compile(r'(?<![\w-])(e{2,}|y{2,}|e+m{2,}|e{2,}m+|u+m+|u+h+m*|h+m{2,}|y+m+)(?![\w-])',
+                        re.IGNORECASE)
 
 
 def verify_cues(cues, source=None, max_len=MAX_LEN, cps_limit=CPS):
@@ -1070,7 +1074,7 @@ def verify_cues(cues, source=None, max_len=MAX_LEN, cps_limit=CPS):
                 lower_words[w] = lower_words.get(w, 0) + 1
     issues = {k: [] for k in (
         'timing', 'empty', 'too_many_lines', 'line_too_long', 'too_fast', 'midsentence_capital',
-        'hanging_word', 'tags', 'spacing', 'leftovers', 'quotes')}
+        'hanging_word', 'tags', 'spacing', 'leftovers', 'quotes', 'filler')}
 
     def add(kind, i, cue, note=''):
         item = {'index': str(i), 'text': cue.text}
@@ -1124,6 +1128,10 @@ def verify_cues(cues, source=None, max_len=MAX_LEN, cps_limit=CPS):
             if re.search(r'  |\s[,.?!:;](?!\.)|[,;:](?=[^\s\d"”»])|(?<!\.)[.?!](?=[A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż])|,,|\?\?\?|!!!', pl):
                 add('spacing', i, c, 'double space, space before punctuation or none after it')
                 break
+        fillers = _FILLER_RE.findall(text)
+        if fillers:
+            add('filler', i, c, f'hesitation sound {", ".join(dict.fromkeys(fillers))}: drop it '
+                                'unless the hesitation itself matters in the scene')
         if re.search(r'\{[a-z]{2}:|BRAK NAPISÓW| / |[—–]', c.text):
             add('leftovers', i, c, 'reference line, marker, slash break or long dash')
         quote_styles['„”'] += len(re.findall('[„”]', text))
@@ -1167,10 +1175,17 @@ def cmd_review_apply(args):
     with open(args.fixes, encoding='utf-8') as fh:
         fixes = json.load(fh)
     applied = []
+    deleted = set()
     for fix in fixes:
         try:
             pos = int(str(fix['index']).strip()) - 1
         except (KeyError, ValueError):
+            continue
+        if fix.get('delete') is True and 0 <= pos < len(cues):
+            # a cue that is only a hesitation ("Yyy...") - removed at the end, so the
+            # other indexes still point at the cues the review saw
+            deleted.add(pos)
+            applied.append({'index': fix['index'], 'before': cues[pos].text, 'after': None})
             continue
         text = str(fix.get('text', '')).replace('\r', '').strip()
         if not (0 <= pos < len(cues)) or not text:
@@ -1180,6 +1195,7 @@ def cmd_review_apply(args):
         if lines != cues[pos].lines:
             applied.append({'index': fix['index'], 'before': cues[pos].text, 'after': '\n'.join(lines)})
             cues[pos].lines = lines
+    cues = [c for k, c in enumerate(cues) if k not in deleted]
     with open(args.translated, 'w', encoding='utf-8', newline='') as fh:
         fh.write(format_srt(cues))
     # corrections change text lengths, so display times are fixed again afterwards
@@ -1189,7 +1205,7 @@ def cmd_review_apply(args):
             json.dump({'translated': os.path.abspath(args.translated),
                        'sha256': _file_hash(args.translated)}, fh)
     found = verify_cues(parse_srt(read_text(args.translated)))
-    out({'applied': len(applied), 'changes': applied,
+    out({'applied': len(applied), 'deleted': len(deleted), 'changes': applied,
          'fix': {k: fix_stats.get(k, 0) for k in ('rewrapped', 'extended', 'gaps_fixed')},
          'verify': {k: len(v) for k, v in found.items()}})
 
