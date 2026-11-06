@@ -244,11 +244,11 @@ If the user asks for a **faithful / full translation** ("dokładne tłumaczenie"
 Run it on the translated file (it rewraps lines that are too long, fixes display times and dialogue dashes, and joins pieces of one sentence into one subtitle):
 
 ```
-python "$S/srt_fix.py" "<output.srt>" --source "<source.srt>" --join-fragments
+python "$S/srt_fix.py" "<output.srt>" --source "<source.srt>"
 ```
 
 Options:
-- `--join-fragments` (**always pass it**, except with `--no-timing`): US closed captions often cut one short sentence into 2–3 quick flashes ("Powiem starym," / "że to stypendium w Nowym Jorku," / "i spadam stąd."). A subtitle that does not end a sentence (no `.`, `?`, `!` at the end, or a pause `...` followed by the same sentence in lower case: "Musisz tak..." / "siorbać i stękać?") is joined with the next one when the pause between them is under 0.3 s, neither is a dialogue (`- `), both are italic or both are not, and together they fit in 2 × 42 characters, 7 s and the reading speed. The joined subtitle spans the time of both, so nothing moves against the speech. This happens only here, on the finished file: during translation cues are never merged (see step 7).
+- Joining sentence pieces is **on by default** (`--no-join-fragments` turns it off; with `--no-timing` it is skipped, because it changes times). US closed captions often cut one short sentence into 2–3 quick flashes ("Powiem starym," / "że to stypendium w Nowym Jorku," / "i spadam stąd."). A subtitle that does not end a sentence (no `.`, `?`, `!` at the end, or a pause `...` followed by the same sentence in lower case: "Musisz tak..." / "siorbać i stękać?") is joined with the next one when the pause between them is under 0.3 s, neither is a dialogue (`- `), both are italic or both are not, and together they fit in 2 × 42 characters, 7 s and the reading speed. The joined subtitle spans the time of both, so nothing moves against the speech. This happens only here, on the finished file: during translation cues are never merged (see step 7).
 - `--clean-music`: removes subtitles with music notes / song lyrics (`♪`, `♫`).
 - `--clean-sdh`: removes hearing-impaired sound descriptions and labels.
 - `--source "<source.srt>"`: the file you translated from. Some source subtitles (US closed captions) put a dash at the start of every change of speaker, even for one person, and the translation tends to copy it. Fix subs removes such dashes by the Polish convention, and with `--source` it also settles the doubtful ones ("- Smakuje mi. / Trochę słone.") by checking whether the speaker changes in the source.
