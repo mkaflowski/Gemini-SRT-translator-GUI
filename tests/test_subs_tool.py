@@ -468,3 +468,38 @@ def test_verify_flags_fillers_and_review_apply_deletes_cue(tmp_path):
     assert res["deleted"] == 1 and "filler" not in res["verify"]
     text = srt.read_text(encoding="utf-8")
     assert "Yyy" not in text and "Nie, to raczej..." in text and "No to chodźmy." in text
+
+
+def _track(n, lang, title="", forced=False, extractable=True, default=False):
+    return {"track": n, "language": lang, "title": title, "codec": "subrip", "default": default,
+            "forced": forced, "extractable": extractable}
+
+
+def test_source_plan_reference_priority_from_files():
+    subs = [{"file": "Film.en.srt", "language": "en"}, {"file": "Film.ru.srt", "language": "ru"},
+            {"file": "Film.ita.sdh.srt", "language": "it"}, {"file": "Film.es.srt", "language": "es"},
+            {"file": "Film.ar.srt", "language": "ar"}, {"file": "Film.pl.srt", "language": "pl"}]
+    plan = subs_tool.source_plan({"file": "Film.mkv", "tracks": []}, subs, 1)
+    assert plan["base"] == "Film.en.srt" and plan["reference"] == "Film.ita.sdh.srt"
+    assert plan["reference_lang"] == "it" and plan["extract_tracks"] == []
+
+
+def test_source_plan_extracts_missing_reference_by_priority():
+    tracks = [_track(0, "en", "SDH"), _track(1, "en", default=True), _track(2, "ru"), _track(3, "es"),
+              _track(4, "it", forced=True), _track(5, "de"), _track(6, "fr", extractable=False)]
+    plan = subs_tool.source_plan({"file": "Film.mkv", "tracks": tracks}, [], 1)
+    # fr is a bitmap track and it is forced: Spanish comes next
+    assert plan["extract_tracks"] == [1, 3] and plan["extract_langs"] == ["en", "es"]
+    plan = subs_tool.source_plan({"file": "Film.mkv", "tracks": tracks},
+                                 [{"file": "Film.en.srt", "language": "en"}], 1)
+    assert plan["extract_tracks"] == [3] and plan["reference_lang"] == "es"
+
+
+def test_source_plan_prefers_better_track_over_worse_file():
+    subs = [{"file": "Film.en.srt", "language": "en"}, {"file": "Film.ita.srt", "language": "it"}]
+    tracks = [_track(0, "en"), _track(1, "fr"), _track(2, "it")]
+    plan = subs_tool.source_plan({"file": "Film.mkv", "tracks": tracks}, subs, 1)
+    assert plan["extract_tracks"] == [1] and plan["reference_lang"] == "fr" and plan["reference"] is None
+    tracks = [_track(0, "en"), _track(1, "es")]                 # Spanish is worse than the Italian file
+    plan = subs_tool.source_plan({"file": "Film.mkv", "tracks": tracks}, subs, 1)
+    assert plan["extract_tracks"] == [] and plan["reference"] == "Film.ita.srt"
