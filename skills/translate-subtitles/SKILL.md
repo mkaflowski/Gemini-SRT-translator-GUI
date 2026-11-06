@@ -34,25 +34,27 @@ python "$S/subs_tool.py" scan "<folder>"
 
 Show the videos and the `.srt` files with their `language` (`en+fr` = an already merged file). Files with the code `ar` are the user's earlier **AI translations**, not Arabic: never translate from them and don't count them as a language.
 
-## Step 2: No subtitles → the video file
+`plan` (one per video) holds the defaults for steps 2–3: `base` (the English file), `reference` / `reference_lang` (the second language) and `extract_tracks` / `extract_langs` (what to take from the video for what is missing). The reference language is chosen in this order: **French, Italian, Spanish, Russian**, then any other (Portuguese, German, Dutch, ...); never Polish or `ar`. Files and video tracks compete together: a French track in the video beats an `.ita.srt` next to it (and is extracted), an Italian file beats a Spanish track. Plain files come before SDH ones, forced tracks are never used.
 
-If there is no `en` and no `fr` in `languages_present`, ask whether to look inside the video. Show `videos[].tracks` (number, language, title, `forced`/`default`, `extractable`; bitmap tracks like PGS can't become SRT) and ask which to extract (default: all `en`/`fr` text tracks):
+## Step 2: Missing subtitles → the video file
+
+If `plan` has `extract_tracks` (no English file, or the video has a better reference language than the files), ask whether to take them from the video. Show `videos[].tracks` (number, language, title, `forced`/`default`, `extractable`; bitmap tracks like PGS can't become SRT). **Default: the tracks in `extract_tracks`** (the English track and the best reference language, e.g. Italian when there is no French):
 
 ```
-python "$S/subs_tool.py" extract "<video>" --tracks 0,2
+python "$S/subs_tool.py" extract "<video>" --tracks 1,3
 ```
 
 Files are saved as `<video name>.<lang>.srt`. On `"status": "exists"` ask whether to overwrite or number the file (`--on-exists overwrite` / `--on-exists number`), then `scan` again.
 
 ## Step 3: Merge two subtitle files
 
-Ask whether to merge two files (a bilingual source helps with gender, formality and context). **Default: base `en`, reference `fr`.**
+Ask whether to merge two files (a bilingual source helps with gender, formality and context). **Default: yes, base `plan.base` (English), reference `plan.reference`** (French, otherwise Italian, Spanish, Russian, ...):
 
 ```
-python "$S/srt_merge.py" "<base.srt>" "<reference.srt>" --lang-base en --lang-other fr
+python "$S/srt_merge.py" "<base.srt>" "<reference.srt>" --lang-base en --lang-other <reference_lang>
 ```
 
-The result `<name>.en_fr.srt` has a `{fr: ...}` reference line under each base line, and the marker `[en: BRAK NAPISÓW - PRZETŁUMACZ Z POZOSTAŁYCH]` where only the reference has the moment. The reference is synced automatically.
+The result `<name>.en_<lang>.srt` has a `{<lang>: ...}` reference line under each base line (e.g. `{it: ...}`), and the marker `[en: BRAK NAPISÓW - PRZETŁUMACZ Z POZOSTAŁYCH]` where only the reference has the moment. The reference is synced automatically.
 
 ## Step 4: Source file
 

@@ -146,7 +146,65 @@ def cmd_scan(args):
                 count = None
             subs.append({'file': name, 'language': lang_from_name(name), 'cues': count})
     out({'folder': folder, 'videos': videos, 'subtitles': subs,
-         'languages_present': sorted({s['language'] for s in subs if s['language']})})
+         'languages_present': sorted({s['language'] for s in subs if s['language']}),
+         'plan': [source_plan(v, subs, len(videos)) for v in videos] or
+                 ([source_plan(None, subs, 0)] if subs else [])})
+
+
+# Second language for the bilingual source, best first: French, then Italian, Spanish,
+# Russian, then any other. English is the base; Polish and "ar" (the user's AI
+# translations) are never a reference.
+REFERENCE_ORDER = ['fr', 'it', 'es', 'ru', 'pt', 'de', 'nl', 'sv', 'no', 'da', 'fi', 'cs', 'sk',
+                   'hu', 'ro', 'uk', 'bg', 'hr', 'sr', 'el', 'tr', 'he', 'ja', 'ko', 'zh']
+NOT_REFERENCE = {'en', 'pl', 'ar', ''}
+
+
+def _ref_rank(lang):
+    return REFERENCE_ORDER.index(lang) if lang in REFERENCE_ORDER else len(REFERENCE_ORDER)
+
+
+def _sub_tags(name):
+    tokens = {t.lower() for t in re.split(r'[.\-_\s\[\]]+', os.path.splitext(name)[0])}
+    return 'forced' in tokens, bool(tokens & {'sdh', 'cc', 'hi'})
+
+
+def source_plan(video, subs, n_videos):
+    """Default sources for one video: the English base, the best reference language
+    (REFERENCE_ORDER) and the tracks to extract from the video for what is missing."""
+    stem = os.path.splitext(video['file'])[0] if video else ''
+    own = [s for s in subs if n_videos <= 1 or s['file'].startswith(stem)]
+    single = [s for s in own if s['language'] and '+' not in s['language']
+              and not _sub_tags(s['file'])[0]]
+    # plain before SDH (cleaning removes the notes, but a plain file has less to remove)
+    base = sorted((s for s in single if s['language'] == 'en'), key=lambda s: _sub_tags(s['file'])[1])
+    refs = sorted((s for s in single if s['language'] not in NOT_REFERENCE),
+                  key=lambda s: (_ref_rank(s['language']), _sub_tags(s['file'])[1]))
+    merged = [s['file'] for s in own if s['language'] and '+' in s['language']
+              and not s['language'].endswith('+ar')]
+    plan = {'video': video['file'] if video else None,
+            'base': base[0]['file'] if base else None,
+            'reference': refs[0]['file'] if refs else None,
+            'reference_lang': refs[0]['language'] if refs else None,
+            'merged': merged, 'extract_tracks': [], 'extract_langs': []}
+    tracks = (video or {}).get('tracks')
+    if isinstance(tracks, list):
+        usable = [t for t in tracks if t['extractable'] and not t['forced']]
+        sdh = lambda t: bool(re.search(r'sdh|hearing|cc\b', t['title'] or '', re.IGNORECASE))
+        if not plan['base']:
+            en = sorted((t for t in usable if t['language'] == 'en'), key=lambda t: (sdh(t), not t['default']))
+            if en:
+                plan['extract_tracks'].append(en[0]['track'])
+                plan['extract_langs'].append('en')
+        ref = sorted((t for t in usable if t['language'] not in NOT_REFERENCE and t['language'] != 'und'),
+                     key=lambda t: (_ref_rank(t['language']), sdh(t)))
+        # a track in a better language than every file next to the video wins
+        # (French in the video beats an .ita.srt in the folder)
+        if ref and (not plan['reference'] or _ref_rank(ref[0]['language']) < _ref_rank(plan['reference_lang'])):
+            plan['extract_tracks'].append(ref[0]['track'])
+            plan['extract_langs'].append(ref[0]['language'])
+            plan['reference'] = None
+            plan['reference_lang'] = ref[0]['language']
+    return plan
 
 
 def cmd_extract(args):
