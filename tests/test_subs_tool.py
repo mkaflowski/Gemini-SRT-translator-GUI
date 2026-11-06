@@ -344,3 +344,33 @@ def test_char_budget_limits():
     cues = [Cue(0, 400, ["Hi."]), Cue(500, 20000, ["Long speech."])]
     assert subs_tool.char_budget(cues, 0) == subs_tool.BUDGET_MIN      # never below the minimum
     assert subs_tool.char_budget(cues, 1) == 84                       # never more than two full lines
+
+
+def test_join_sentence_fragments():
+    from srt_fix import join_sentence_fragments
+    from srt_merge import Cue
+    cues = [
+        Cue(157653, 158521, ["Powiem starym,"]),
+        Cue(158522, 160358, ["że to stypendium w Nowym Jorku,"]),
+        Cue(160359, 161919, ["i spadam stąd."]),
+        Cue(162000, 163000, ["- Serio?", "- Tak."]),            # a dialogue is never joined
+        Cue(163100, 164000, ["<i>Kiedy byłem</i>"]),
+        Cue(164010, 165900, ["<i>mały, wierzyłem w to.</i>"]),
+        Cue(166000, 166900, ["A oni"]),                          # together over 2 x 42 chars
+        Cue(166910, 169800, ["uwierzą w to wszystko bez żadnego dowodu,", "bez papierów, listów, zdjęć i pieczątek?"]),
+        Cue(170000, 171000, ["Wiesz,"]),                        # pause too long
+        Cue(171500, 172500, ["że cię kocham."]),
+        Cue(2196888, 2197756, ["Musisz tak..."]),               # a pause inside one sentence
+        Cue(2197757, 2198840, ["...siorbać i stękać?"]),
+        Cue(2199000, 2200000, ["Ja chyba..."]),                 # trails off, a new sentence follows
+        Cue(2200100, 2201000, ["Nieważne."]),
+    ]
+    out, joined = join_sentence_fragments(cues)
+    texts = [c.lines for c in out]
+    assert joined == 4 and len(out) == 10
+    assert texts[0] == ["Powiem starym, że to stypendium", "w Nowym Jorku, i spadam stąd."]
+    assert (out[0].start, out[0].end) == (157653, 161919)
+    assert texts[2] == ["<i>Kiedy byłem mały, wierzyłem w to.</i>"]
+    assert texts[3] == ["A oni"] and texts[5] == ["Wiesz,"]
+    assert texts[7] == ["Musisz tak... siorbać i stękać?"]
+    assert texts[8] == ["Ja chyba..."] and texts[9] == ["Nieważne."]
