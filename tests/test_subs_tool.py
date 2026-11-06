@@ -374,3 +374,30 @@ def test_join_sentence_fragments():
     assert texts[3] == ["A oni"] and texts[5] == ["Wiesz,"]
     assert texts[7] == ["Musisz tak... siorbać i stękać?"]
     assert texts[8] == ["Ja chyba..."] and texts[9] == ["Nieważne."]
+
+
+@pytest.mark.parametrize("flags, cues", [([], 1), (["--join-fragments"], 1), (["--no-join-fragments"], 2),
+                                         (["--no-timing"], 2)])
+def test_fix_joins_fragments_by_default(tmp_path, flags, cues):
+    from srt_merge import parse_srt, read_text
+    path = tmp_path / "a.srt"
+    path.write_text("1\n00:36:36,888 --> 00:36:37,756\nMusisz tak...\n\n"
+                    "2\n00:36:37,757 --> 00:36:38,840\nsiorbać i stękać?\n", encoding="utf-8")
+    res = subprocess.run([sys.executable, os.path.join(SKILL_SCRIPTS, "srt_fix.py"), str(path), *flags],
+                         capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, PYTHONUTF8="1"))
+    assert res.returncode == 0, res.stderr
+    assert len(parse_srt(read_text(str(path)))) == cues
+
+
+@pytest.mark.parametrize("parts, expected", [
+    ([["Kiwali głowami,"], ["jakbym im tłumaczył", "zasady panujące w burdelu."]],
+     [["Kiwali głowami, jakbym im tłumaczył", "zasady panujące w burdelu."]]),   # break at the old pause
+    ([["Widok na całe miasto"], ["i świadomość, że jesteś"], ["na szczycie świata."]],
+     [["Widok na całe miasto i świadomość,", "że jesteś na szczycie świata."]]),  # "że" starts a line
+    ([["KINO WELLFLEET"], ["TERAZ NA EKRANIE"]], [["KINO WELLFLEET"], ["TERAZ NA EKRANIE"]]),  # on-screen text
+])
+def test_join_wraps_at_pauses_and_skips_screen_text(parts, expected):
+    from srt_fix import join_sentence_fragments
+    from srt_merge import Cue
+    cues = [Cue(i * 1000, i * 1000 + 999, p) for i, p in enumerate(parts)]
+    assert [c.lines for c in join_sentence_fragments(cues)[0]] == expected

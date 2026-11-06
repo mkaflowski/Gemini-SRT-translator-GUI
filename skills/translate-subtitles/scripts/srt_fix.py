@@ -67,7 +67,8 @@ CONJUNCTIONS = {
 }
 
 # nie mogą zaczynać linii (przyklejone do poprzedniego słowa)
-CLITICS = {"się", "sie", "by", "bym", "byś", "byśmy", "byście", "li", "że", "no"}
+# („że" tu nie ma: jako spójnik zaczyna linię - „świadomość, / że jesteś")
+CLITICS = {"się", "sie", "by", "bym", "byś", "byśmy", "byście", "li", "no"}
 
 # nie mogą kończyć linii (przyklejone do następnego słowa)
 PROCLITICS = {"nie", "ani", "ni", "czy", "niech", "niechaj", "niechże"}
@@ -224,7 +225,8 @@ def forbidden_break(words: Sequence[str], i: int) -> str | None:
         return "przyimek oderwany od frazy"
     if p in PROCLITICS:
         return "„nie" + "\"/partykuła oderwana od czasownika"
-    if n in CLITICS:
+    if n in CLITICS and not ends_with_punct(prev):
+        # po przecinku/kropce to nowe zdanie: „Przyszedł, / by pomóc", „Dobra. / No to idziemy"
         return "„się\"/„by\" nie może zaczynać linii"
     if len(p) == 1 and p.isalpha():
         return "jednoliterowe słowo na końcu linii"
@@ -663,7 +665,37 @@ def _joinable(cue: Cue) -> bool:
     lines = _plain_lines(cue)
     if not lines or any(_starts_with_dash(l) for l in lines):
         return False
+    letters = [ch for ch in "".join(lines) if ch.isalpha()]
+    if len(letters) >= 2 and all(ch.isupper() for ch in letters):
+        return False  # napis ekranowy („KINO WELLFLEET”), nie mowa
     return not (len(lines) == 1 and lines[0].startswith("#") and lines[0].endswith("#"))
+
+
+def _wrap_joined(segments: list[str], max_len: int) -> tuple[list[str], list[str]]:
+    """Linie sklejonego napisu.  Mieści się w jednej - jedna linia.  Inaczej
+    najlepiej łamać tam, gdzie kończył się dawny kawałek albo linia (tam mówiący
+    robił pauzę), jeśli obie linie się mieszczą i podział nie jest zakazany;
+    w ostateczności zwykłe łamanie Fix subs."""
+    def tidy(text: str) -> str:
+        return re.sub(r"</i>\s+<i>", " ", text, flags=re.IGNORECASE)
+
+    whole = tidy(" ".join(segments))
+    if visible_len(whole) <= max_len:
+        return [whole], []
+    words = whole.split()
+    best = None
+    for k in range(1, len(segments)):
+        top, bottom = tidy(" ".join(segments[:k])), tidy(" ".join(segments[k:]))
+        if visible_len(top) > max_len or visible_len(bottom) > max_len:
+            continue
+        if forbidden_break(words, len(top.split())):
+            continue
+        diff = abs(visible_len(top) - visible_len(bottom))
+        if best is None or diff < best[0]:
+            best = (diff, [top, bottom])
+    if best is not None:
+        return best[1], []
+    return fix_cue_lines([whole], max_len)
 
 
 def _italic(cue: Cue) -> bool:
@@ -684,18 +716,19 @@ def join_sentence_fragments(cues: list[Cue], cps: float = CPS, max_duration: int
     Zwraca (napisy, liczba sklejeń).
     """
     out: list[Cue] = []
+    segments: list[list[str]] = []  # dawne linie każdego napisu z `out` (miejsca pauz)
     joined = 0
     for cue in cues:
         prev = out[-1] if out else None
+        own = [l.strip() for l in cue.lines if l.strip()]
         if (prev is not None and _is_fragment(prev, cue) and _joinable(prev) and _joinable(cue)
                 and _italic(prev) == _italic(cue) and 0 <= cue.start - prev.end < max_gap):
-            # jedno zdanie = jedna linia do przełamania od nowa (nie 3-4 stare linie);
             # „...siorbać” po „tak...” to ta sama pauza - drugi wielokropek odpada
-            nxt_lines = [l.strip() for l in cue.lines if l.strip()]
-            nxt_lines[0] = _ELLIPSIS_START_RE.sub(lambda m: m.group(1) or "", nxt_lines[0], count=1)
-            text = " ".join([l.strip() for l in prev.lines if l.strip()] + nxt_lines)
-            text = re.sub(r"</i>\s+<i>", " ", text, flags=re.IGNORECASE)
-            lines, problems = fix_cue_lines([text], max_len)
+            nxt = list(own)
+            if _ELLIPSIS_END_RE.search(_plain_lines(prev)[-1]):
+                nxt[0] = _ELLIPSIS_START_RE.sub(lambda m: m.group(1) or "", nxt[0], count=1)
+            segs = segments[-1] + nxt
+            lines, problems = _wrap_joined(segs, max_len)
             span = cue.end - prev.start
             # sklejenie nie może utrudnić czytania: najwyżej `cps` albo tyle, ile
             # wymagał szybszy z dwóch kawałków (wtedy i tak jest łatwiej - jeden błysk mniej)
@@ -704,9 +737,11 @@ def join_sentence_fragments(cues: list[Cue], cps: float = CPS, max_duration: int
                     and char_count(lines) / span * 1000 <= max(cps, parts_cps) + 0.5):
                 prev.lines = lines
                 prev.end = cue.end
+                segments[-1] = segs
                 joined += 1
                 continue
         out.append(cue)
+        segments.append(own)
     return out, joined
 
 
@@ -750,7 +785,7 @@ def fix_srt(path: str, out_path: str | None = None, max_len: int = MAX_LEN,
             min_gap: int = MIN_GAP, merge_close: bool = False,
             source_path: str | None = None,
             clean_music: bool = False, clean_sdh: bool = False,
-            join_fragments: bool = False) -> tuple[str, dict]:
+            join_fragments: bool = True) -> tuple[str, dict]:
     """Popraw plik SRT — domyślnie w miejscu, nadpisując plik wejściowy.
 
     ``source_path`` (napisy, z których tłumaczono) pozwala rozstrzygnąć
@@ -819,9 +854,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                     help=f"minimalny odstęp między napisami w ms (domyślnie {MIN_GAP})")
     ap.add_argument("--merge-close", action="store_true",
                     help="scalaj za krótki napis z następnym, gdy dzieli je mniej niż 0,5 s")
-    ap.add_argument("--join-fragments", action="store_true",
-                    help="sklejaj kawałki jednego zdania (napis bez kropki na końcu i następny "
-                         f"po mniej niż {JOIN_GAP / 1000:g} s) w jeden napis, gdy razem się mieszczą")
+    ap.add_argument("--no-join-fragments", dest="join_fragments", action="store_false",
+                    help="nie sklejaj kawałków jednego zdania (domyślnie napis bez kropki na końcu "
+                         f"i następny po mniej niż {JOIN_GAP / 1000:g} s są sklejane, gdy razem się mieszczą)")
+    ap.add_argument("--join-fragments", dest="join_fragments", action="store_true",
+                    help=argparse.SUPPRESS)  # dawna opcja - teraz to domyślne zachowanie
     ap.add_argument("--crlf", action="store_true", help="zapisz z końcami linii CRLF")
     ap.add_argument("--clean-music", action="store_true",
                     help="usuń napisy muzyczne z nutkami (teksty piosenek)")
