@@ -503,3 +503,59 @@ def test_source_plan_prefers_better_track_over_worse_file():
     tracks = [_track(0, "en"), _track(1, "es")]                 # Spanish is worse than the Italian file
     plan = subs_tool.source_plan({"file": "Film.mkv", "tracks": tracks}, subs, 1)
     assert plan["extract_tracks"] == [] and plan["reference"] == "Film.ita.srt"
+
+
+def test_sdh_speaker_extraction_and_merge(tmp_path):
+    from srt_merge import clean_lines, extract_sdh_context, merge_srt, parse_merged_name
+    assert extract_sdh_context(["FATIHA: (SOBBING)", "<i>Baba, it's me.</i>"]) == "FATIHA (SOBBING)"
+    assert clean_lines(["FATIHA: (SOBBING)", "<i>Baba, it's me.</i>"]) == ["<i>Baba, it's me.</i>"]
+    assert extract_sdh_context(["OPERATION: OVERLORD"]) == ""
+
+    base = tmp_path / "Film.en.srt"
+    sdh = tmp_path / "Film.en.sdh.srt"
+    fr = tmp_path / "Film.fr.srt"
+    base.write_text("1\n00:00:01,000 --> 00:00:03,000\nIt's coming.\n\n", encoding="utf-8")
+    fr.write_text("1\n00:00:01,000 --> 00:00:03,000\nÇa arrive.\n\n", encoding="utf-8")
+    sdh.write_text("1\n00:00:00,200 --> 00:00:00,800\n(BABY CRYING)\n\n"
+                   "2\n00:00:01,000 --> 00:00:03,000\nFATIHA: (SOFTLY)\nIt's coming.\n\n", encoding="utf-8")
+    m1, _ = merge_srt(str(base), str(fr), lang_base="en", lang_other="fr")
+    m2, stats = merge_srt(m1, str(sdh), lang_base="en", lang_other="sdh")
+    assert parse_merged_name(m2) == ("en", "fr", "sdh")
+    assert stats["missing"] == 0  # pure sound effects do not inject fake missing cues
+    assert "{fr: Ça arrive.}" in stats["text"] and "{sdh: FATIHA (SOFTLY)}" in stats["text"]
+
+
+def test_review_split_combines_joined_cues_attaches_sdh_and_flags_repeats(tmp_path):
+    en = tmp_path / "Film.en.srt"
+    sdh = tmp_path / "Film.en.sdh.srt"
+    pl = tmp_path / "Film.ar.srt"
+
+    en_cues, pl_cues = [], []
+    # Cue 1 & 2 get joined into one Polish cue 1
+    en_cues.append("1\n00:00:01,000 --> 00:00:02,000\nWho deserves the best\n\n")
+    en_cues.append("2\n00:00:02,050 --> 00:00:03,500\nof my companionship?\n\n")
+    pl_cues.append("1\n00:00:01,000 --> 00:00:03,500\nKto zasługuje na mój szacunek?\n\n")
+
+    for i in range(3, 22):
+        t0, t1 = i * 2, i * 2 + 1
+        en_cues.append(f"{i}\n00:00:{t0:02d},000 --> 00:00:{t1:02d},000\nFiller line {i}.\n\n")
+        pl_cues.append(f"{i - 1}\n00:00:{t0:02d},000 --> 00:00:{t1:02d},000\nWypełniacz {i}.\n\n")
+
+    # Bookend repeat of cue 1+2 at the end of the film
+    en_cues.append("22\n00:00:50,000 --> 00:00:53,000\nWho deserves the best\nof my companionship?\n\n")
+    pl_cues.append("21\n00:00:50,000 --> 00:00:53,000\nKto zasługuje na moje dobre serce?\n\n")
+
+    en.write_text("".join(en_cues), encoding="utf-8")
+    pl.write_text("".join(pl_cues), encoding="utf-8")
+    sdh.write_text("1\n00:00:01,000 --> 00:00:03,500\nFATIHA: Who deserves the best\nof my companionship?\n\n",
+                   encoding="utf-8")
+
+    w = tmp_path / "work"
+    rc, res = run("review-split", str(pl), str(en), "--out-dir", str(w))
+    assert rc == 0 and res["sdh_attached"] == 1 and res["repeated_cues"] == 2
+    items = json.loads((w / "review_001.json").read_text(encoding="utf-8"))
+    assert "Who deserves the best\nof my companionship?" in items[0]["original"]
+    assert "{sdh: FATIHA}" in items[0]["original"]
+    assert items[0]["repeated_at"] == [{"index": "21", "translation": "Kto zasługuje na moje dobre serce?"}]
+    assert items[-1]["repeated_at"] == [{"index": "1", "translation": "Kto zasługuje na mój szacunek?"}]
+
