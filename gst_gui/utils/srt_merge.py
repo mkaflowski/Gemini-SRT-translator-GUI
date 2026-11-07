@@ -47,10 +47,11 @@ GST_DESCRIPTION = (
 )
 
 
-def gst_description(lang_base: str = "en", lang_other: str = "fr") -> str:
+def gst_description(lang_base: str = "en", lang_other: str = "fr", *more_langs: str) -> str:
     """Opis do wklejenia w polu description tłumacza (kontekst dla modelu)."""
+    others = "/".join((lang_other, *more_langs)) if more_langs else lang_other
     return GST_DESCRIPTION.format(
-        other=lang_other, missing=MISSING_TEMPLATE.format(lang=lang_base)
+        other=others, missing=MISSING_TEMPLATE.format(lang=lang_base)
     )
 
 _TIME_RE = re.compile(
@@ -121,18 +122,20 @@ def guess_lang_tag(path: str, default: str = "xx") -> str:
     return default
 
 
-_MERGED_NAME_RE = re.compile(r"\.([A-Za-z]{2,3})_([A-Za-z]{2,3})\.srt$", re.IGNORECASE)
+_MERGED_NAME_RE = re.compile(r"\.([A-Za-z]{2,3}(?:_[A-Za-z]{2,3})+)\.srt$", re.IGNORECASE)
 
 
-def parse_merged_name(path: str) -> tuple[str, str] | None:
+def parse_merged_name(path: str) -> tuple[str, ...] | None:
     """Rozpoznaj plik scalony po nazwie: ``Film.en_fr.srt`` -> ``("en", "fr")``.
 
-    Zwraca None, jeśli nazwa nie ma końcówki ``<lang1>_<lang2>.srt``.
+    Obsługuje też pliki scalone z więcej niż jednym językiem pomocniczym
+    (np. ``Film.en_fr_it.srt`` -> ``("en", "fr", "it")``).
+    Zwraca None, jeśli nazwa nie ma końcówki ``<lang1>_<lang2>[_<lang3>...].srt``.
     """
     m = _MERGED_NAME_RE.search(os.path.basename(path or ""))
     if not m:
         return None
-    return m.group(1).lower(), m.group(2).lower()
+    return tuple(p.lower() for p in m.group(1).split("_"))
 
 
 def find_reference_candidates(base_path: str) -> list[str]:
@@ -252,10 +255,11 @@ _MUSIC_ANY_RE = re.compile("[%s]" % MUSIC_CHARS)
 # "MAN:", "JIM (V.O.):", "-NARRATOR:" — etykieta mówiącego z napisów SDH
 _SPEAKER_RE = re.compile(
     r"^(?P<lead>\s*(?:[-–—]\s*)?(?:<[^>]+>\s*)*)"
-    r"(?P<label>[A-ZÀ-ÖØ-Þ0-9][A-ZÀ-ÖØ-Þ0-9 '’.\-]{0,24}?)\s*:\s+"
-    r"(?=\S)"
+    r"(?P<label>[A-ZÀ-ÖØ-Þ0-9][A-ZÀ-ÖØ-Þ0-9 '’.\-]{0,24}?)\s*:(?:\s+(?=\S)|\s*$)"
 )
 _TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+_REF_PASSTHROUGH_RE = re.compile(r"^\s*(\{[a-z]{2,3}:.*\}|\[[a-z]{2,3}:\s*BRAK NAPIS)", re.IGNORECASE)
+_PAREN_SDH_RE = re.compile(r"\[([^\[\]]+)\]|\(([^()]+)\)")
 
 
 def _remove_spans(text: str, opener: str, closer: str) -> str:
@@ -286,7 +290,7 @@ def _is_blank(line: str) -> bool:
     return _TAG_RE.sub("", line).strip(" \t-–—.…\"'«»¿?!,:;*•") == ""
 
 
-def _strip_speaker(line: str) -> str:
+def _strip_speaker(line: str, has_lowercase_in_cue: bool = False) -> str:
     m = _SPEAKER_RE.match(line)
     if not m:
         return line
@@ -294,6 +298,8 @@ def _strip_speaker(line: str) -> str:
     label = m.group("label")
     if not any(ch.isalpha() for ch in label) or len(label.split()) > 3:
         return line
+    if not rest.strip():
+        return "" if has_lowercase_in_cue else line
     # "OPERATION: OVERLORD" — plansza/tytuł, nie etykieta mówiącego
     letters = [ch for ch in rest if ch.isalpha()]
     if letters and all(ch.isupper() for ch in letters):
@@ -301,17 +307,69 @@ def _strip_speaker(line: str) -> str:
     return m.group("lead") + rest
 
 
+def extract_sdh_context(lines: Sequence[str]) -> str:
+    """Wyciągnij z napisu SDH etykiety mówców ('FATIHA:') i opisy w nawiasach ('(SOBBING)').
+
+    Zwraca zwięzły łańcuch (np. ``"FATIHA (SOBBING)"``, ``"QADIR"``, ``"(GUNSHOTS)"``)
+    albo pusty string, jeśli napis nie zawiera informacji SDH.
+    """
+    raw_lines = [l for l in lines if not _REF_PASSTHROUGH_RE.match(l)]
+    if not raw_lines:
+        return ""
+    stripped_all = _remove_spans(_remove_spans("\n".join(raw_lines), "[", "]"), "(", ")")
+    has_lower = any(ch.islower() for ch in _TAG_RE.sub("", stripped_all))
+    parts: list[str] = []
+    for line in raw_lines:
+        plain_no_parens = _remove_spans(_remove_spans(line, "[", "]"), "(", ")")
+        speaker = ""
+        m = _SPEAKER_RE.match(plain_no_parens)
+        if m:
+            rest = plain_no_parens[m.end() :]
+            label = m.group("label").strip()
+            letters = [ch for ch in rest if ch.isalpha()]
+            if (
+                any(ch.isalpha() for ch in label)
+                and len(label.split()) <= 3
+                and (has_lower if not letters else not all(ch.isupper() for ch in letters))
+            ):
+                speaker = label
+        notes = [
+            (g1 or g2).strip()
+            for g1, g2 in _PAREN_SDH_RE.findall(_TAG_RE.sub("", line))
+            if (g1 or g2).strip()
+        ]
+        if speaker and notes:
+            parts.append(f"{speaker} ({', '.join(notes)})")
+        elif speaker:
+            parts.append(speaker)
+        elif notes:
+            parts.append(f"({', '.join(notes)})")
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for p in parts:
+        if p.lower() not in seen:
+            seen.add(p.lower())
+            uniq.append(p)
+    return "; ".join(uniq)
+
+
 def clean_lines(lines: Sequence[str], music: bool = True, sdh: bool = True) -> list[str]:
     """Wyczyść linie jednego napisu; zwraca tylko te, które coś wnoszą."""
     original = list(lines)
-    text = "\n".join(original)
+    passthrough = [_REF_PASSTHROUGH_RE.match(ln) is not None for ln in original]
+    work_lines = ["" if keep else ln for ln, keep in zip(original, passthrough)]
+    text = "\n".join(work_lines)
 
     if sdh:
         text = _remove_spans(text, "[", "]")
         text = _remove_spans(text, "(", ")")
 
+    has_lower = any(ch.islower() for ch in _TAG_RE.sub("", text))
     result: list[str] = []
-    for old, new in zip(original, text.split("\n")):
+    for old, new, keep in zip(original, text.split("\n"), passthrough):
+        if keep:
+            result.append(old)
+            continue
         if _is_blank(new):
             continue
         if music:
@@ -320,7 +378,7 @@ def clean_lines(lines: Sequence[str], music: bool = True, sdh: bool = True) -> l
                 # niesparowana nutka — cała linia to tekst piosenki
                 new = ""
         if sdh:
-            new = _strip_speaker(new)
+            new = _strip_speaker(new, has_lowercase_in_cue=has_lower)
         if new == old:
             result.append(old)
             continue
@@ -331,15 +389,18 @@ def clean_lines(lines: Sequence[str], music: bool = True, sdh: bool = True) -> l
 
 
 def clean_cues(
-    cues: list[Cue], music: bool = True, sdh: bool = True
+    cues: list[Cue], music: bool = True, sdh: bool = True, sdh_as_ref: bool = False
 ) -> tuple[list[Cue], dict]:
     """Usuń z napisów teksty piosenek i opisy dźwięków dla niesłyszących.
 
-    Puste po czyszczeniu napisy są usuwane w całości.
+    Puste po czyszczeniu napisy są usuwane w całości. Gdy ``sdh_as_ref=True``,
+    usunięte z napisu etykiety mówców i opisy w nawiasach zostają dopisane pod
+    spodem jako linia referencyjna ``{sdh: ...}``.
     """
     stats = {"removed_cues": 0, "cleaned_cues": 0}
     kept: list[Cue] = []
     for cue in cues:
+        sdh_note = extract_sdh_context(cue.lines) if (sdh and sdh_as_ref) else ""
         new_lines = clean_lines(cue.lines, music=music, sdh=sdh)
         if not new_lines:
             stats["removed_cues"] += 1
@@ -347,6 +408,10 @@ def clean_cues(
         if new_lines != cue.lines:
             stats["cleaned_cues"] += 1
             cue.lines = new_lines
+        if sdh_note:
+            ref = f"{{sdh: {sdh_note}}}"
+            if ref not in cue.extras and ref not in cue.lines:
+                cue.extras.append(ref)
         kept.append(cue)
     return kept, stats
 
@@ -497,8 +562,14 @@ def merge_cues(
 
     stats = {"attached": 0, "missing": 0, "base": len(base), "other": len(other)}
     orphans: list[Cue] = []
+    is_sdh_track = lang_other.lower() == "sdh"
 
     for cue in other:
+        sdh_note = extract_sdh_context(cue.lines) if is_sdh_track else ""
+        if is_sdh_track and not sdh_note:
+            continue
+        ref_str = f"{{sdh: {sdh_note}}}" if is_sdh_track else _ref_line(cue, lang_other, join_lines)
+
         # candidates: base cues that can possibly overlap this one
         lo = bisect.bisect_left(starts, cue.start) - 1
         while lo > 0 and base[lo - 1].end > cue.start:
@@ -517,12 +588,15 @@ def merge_cues(
                 matches.append((ratio, cand))
 
         if not matches:
+            if is_sdh_track:
+                # pure sound effects between dialogues must not create fake missing cues
+                continue
             orphans.append(
                 Cue(
                     start=cue.start,
                     end=cue.end,
                     lines=[MISSING_TEMPLATE.format(lang=lang_base)],
-                    extras=[_ref_line(cue, lang_other, join_lines)],
+                    extras=[ref_str],
                     order=cue.order,
                     injected=True,
                 )
@@ -534,7 +608,8 @@ def merge_cues(
             max(matches, key=lambda pair: pair[0])[1]
         ]
         for target in targets:
-            target.extras.append(_ref_line(cue, lang_other, join_lines))
+            if ref_str not in target.extras and ref_str not in target.lines:
+                target.extras.append(ref_str)
         stats["attached"] += 1
 
     merged = base + orphans
@@ -560,9 +635,16 @@ def default_output_path(
     """``/x/Film.en.srt`` + (en, fr) -> ``/x/Film.en_fr.srt``.
 
     Stary kod języka w nazwie jest zastępowany parą języków pliku scalonego.
+    Jeśli plik bazowy jest już scalony (``Film.en_fr.srt``), dopisuje kolejny
+    język (``Film.en_fr_it.srt``).
     """
+    existing = parse_merged_name(path_base)
     root = path_base[:-4] if path_base.lower().endswith(".srt") else path_base
     folder, sep, name = root.rpartition(os.sep)
+    if existing:
+        head, _, _ = name.rpartition(".")
+        langs = "_".join((*existing, lang_other.lower()))
+        return f"{folder}{sep}{head}.{langs}.srt"
     return f"{folder}{sep}{strip_lang_suffix(name)}.{lang_base}_{lang_other}.srt"
 
 
@@ -597,11 +679,15 @@ def merge_srt(
         raise ValueError(f"Plik wyjściowy nadpisałby wejściowy: {out_path}")
     base = parse_srt(read_text(path_base))
     other = parse_srt(read_text(path_other))
+    is_sdh_track = lang_other.lower() == "sdh"
 
     clean_stats = {"removed_cues": 0, "cleaned_cues": 0}
     if clean_music or clean_sdh:
         base, s1 = clean_cues(base, music=clean_music, sdh=clean_sdh)
-        other, s2 = clean_cues(other, music=clean_music, sdh=clean_sdh)
+        if is_sdh_track:
+            s2 = {"removed_cues": 0, "cleaned_cues": 0}
+        else:
+            other, s2 = clean_cues(other, music=clean_music, sdh=clean_sdh)
         for key in clean_stats:
             clean_stats[key] = s1[key] + s2[key]
 

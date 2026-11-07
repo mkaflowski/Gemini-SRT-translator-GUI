@@ -34,19 +34,19 @@ python "$S/subs_tool.py" scan "<folder>"
 
 Show the videos and the `.srt` files with their `language` (`en+fr` = an already merged file). Files with the code `ar` are the user's earlier **AI translations**, not Arabic: never translate from them and don't count them as a language.
 
-`plan` (one per video) holds the defaults for steps 2–3: `base` (the English file), `reference` / `reference_lang` (the second language) and `extract_tracks` / `extract_langs` (what to take from the video for what is missing). The reference language is chosen in this order: **French, Italian, Spanish, Russian**, then any other (Portuguese, German, Dutch, ...); never Polish or `ar`. Files and video tracks compete together: a French track in the video beats an `.ita.srt` next to it (and is extracted), an Italian file beats a Spanish track. Plain files come before SDH ones, forced tracks are never used.
+`plan` (one per video) holds the defaults for steps 2–3: `base` (the English file), `reference` / `reference_lang` (the second language), `extra_references` (other top reference files in the folder: `fr`, `it`, `es`, `ru`), `sdh` / `sdh_track` (an English hearing-impaired track with speaker labels) and `extract_tracks` / `extract_langs` (what to take from the video for what is missing). The reference language is chosen in this order: **French, Italian, Spanish, Russian**, then any other (Portuguese, German, Dutch, ...); never Polish or `ar`. Files and video tracks compete together: a French track in the video beats an `.ita.srt` next to it (and is extracted), an Italian file beats a Spanish track. Plain files come before SDH ones, forced tracks are never used.
 
 ## Step 2: Missing subtitles → the video file
 
-If `plan` has `extract_tracks` (no English file, or the video has a better reference language than the files), ask whether to take them from the video. Show `videos[].tracks` (number, language, title, `forced`/`default`, `extractable`; bitmap tracks like PGS can't become SRT). **Default: the tracks in `extract_tracks`** (the English track and the best reference language, e.g. Italian when there is no French):
+If `plan` has `extract_tracks` (no English file, or the video has a better reference language than the files), ask whether to take them from the video. Show `videos[].tracks` (number, language, title, `forced`/`default`/`sdh`, `extractable`; bitmap tracks like PGS can't become SRT). **Default: the tracks in `extract_tracks`** (plus `plan.sdh_track` when present, saved automatically as `<video>.en.sdh.srt` for speaker context):
 
 ```
 python "$S/subs_tool.py" extract "<video>" --tracks 1,3
 ```
 
-Files are saved as `<video name>.<lang>.srt`. On `"status": "exists"` ask whether to overwrite or number the file (`--on-exists overwrite` / `--on-exists number`), then `scan` again.
+Files are saved as `<video name>.<lang>.srt` (and `<video name>.<lang>.sdh.srt` when a second track in the same language is marked SDH). On `"status": "exists"` ask whether to overwrite or number the file (`--on-exists overwrite` / `--on-exists number`), then `scan` again.
 
-## Step 3: Merge two subtitle files
+## Step 3: Merge subtitle files
 
 Ask whether to merge two files (a bilingual source helps with gender, formality and context). **Default: yes, base `plan.base` (English), reference `plan.reference`** (French, otherwise Italian, Spanish, Russian, ...):
 
@@ -55,6 +55,12 @@ python "$S/srt_merge.py" "<base.srt>" "<reference.srt>" --lang-base en --lang-ot
 ```
 
 The result `<name>.en_<lang>.srt` has a `{<lang>: ...}` reference line under each base line (e.g. `{it: ...}`), and the marker `[en: BRAK NAPISÓW - PRZETŁUMACZ Z POZOSTAŁYCH]` where only the reference has the moment. The reference is synced automatically.
+
+- **Extra reference language (`plan.extra_references`):** if the first reference file has noticeably fewer cues than the English base (e.g. a shortened `.fr.srt`) and another top reference file (`.ita.srt`, `.es.srt`, `.ru.srt`) is in the folder, chain a second merge onto the merged file (`python "$S/srt_merge.py" "<name>.en_fr.srt" "<second_ref.srt>" --lang-other it`).
+- **Speaker labels from SDH (`plan.sdh`):** if an English SDH file is available alongside the plain English base, attach its speaker labels and sound cues as `{sdh: SPEAKER (NOTE)}` lines without duplicating the dialogue:
+  ```
+  python "$S/srt_merge.py" "<merged_or_base.srt>" "<en.sdh.srt>" --lang-other sdh
+  ```
 
 ## Step 4: Source file
 
@@ -74,13 +80,13 @@ From the file name get the title, year and whether it is a series (`S01E02`, `1x
 
 **Resuming.** If `$W/manifest.json` exists, run `python "$S/subs_tool.py" status --out-dir "$W"`, tell the user how many batches are done and ask: **continue** (default) or start over. To continue, skip cleaning and splitting, use `source` from `status` as `<source.srt>`, go on from `next` and redo every `incomplete` / `broken` batch. To start over, split with `--force`. Never re-split without asking.
 
-1. **Clean** (if agreed in step 4) and from then on use `$W/source.srt` as `<source.srt>`:
+1. **Clean** (if agreed in step 4) and from then on use `$W/source.srt` as `<source.srt>` (pass `--sdh-as-ref` so speaker labels like `FATIHA:` or `(SOBBING)` in an unmerged SDH source become `{sdh: ...}` context lines instead of being lost):
 
    ```
-   python "$S/subs_tool.py" clean "<chosen file.srt>" -o "$W/source.srt"
+   python "$S/subs_tool.py" clean "<chosen file.srt>" --sdh-as-ref -o "$W/source.srt"
    ```
 
-   Report how many subtitles were removed with a few `removed_examples` (`--keep-music` / `--keep-sdh` keep that part).
+   Report how many subtitles were removed with a few `removed_examples` (`--keep-music` / `--keep-sdh` keep that part in the visible text).
 
 2. **Split** into batches of about 100, cut at scene breaks (the longest pause in a 70–130 window, preferably after a finished sentence; `--fixed` cuts every N):
 
@@ -90,7 +96,7 @@ From the file name get the title, year and whether it is a series (`S01E02`, `1x
 
    `split` refuses batches over 150: in long batches a model loses track of the cues and shifts the translations. Don't work around it.
 
-3. **Translate** each `batch_NNN.json` in order. It has `translate` (the subtitles, each with `max_chars`, its reading budget), `context_before` (last 10 of the previous batch) and `context_after` (first 5 of the next). The context is **read-only**: use it so a sentence cut by the batch boundary keeps its meaning, and read your own translation of `context_before` in the previous `out_NNN.json` so wording, gender and formality carry on. Translate only the `translate` items.
+3. **Translate** each `batch_NNN.json` in order. It has `translate` (the subtitles, each with `max_chars`, its reading budget, and an optional `earlier_cue` pointing to the first occurrence of a recurring quote in the film), `context_before` (last 10 of the previous batch) and `context_after` (first 5 of the next). The context is **read-only**: use it so a sentence cut by the batch boundary keeps its meaning, and read your own translation of `context_before` in the previous `out_NNN.json` so wording, gender and formality carry on. When an item has `earlier_cue`, look up how you translated that cue earlier so recurring quotes and bookend scenes use the exact same Polish wording. Translate only the `translate` items.
 
    Save `out_NNN.json` (UTF-8, with your file-writing tool) as a list of `{"index", "src", "text"}`, one item per `translate` item, same `index`, same order. **`src`** is the first 3 words of that item's source text, copied as they are (skip `{xx: ...}` lines; a shorter cue: all of it). Write `index` and `src` first, looking at the source, then the translation:
 
@@ -151,14 +157,18 @@ A subtitle gives **the meaning, intent and tone** of a line, not every word: the
 
 **Drop or shorten** when the scene doesn't need it: filler (*well, you know, I mean, like, okay, look*) and hesitation sounds (*uh, um, eee, yyy*: a `...` shows the pause), stutters and false starts; repetitions (*"No, no, no!"* → *"Nie!"*); subject pronouns (*"Nie wiem"*, not *"Ja nie wiem"*); names and forms of address once it's clear who talks to whom; tag questions (*right?, okay?*) that add nothing; what the picture shows; long-winded wording (*"Do you think you could possibly help me?"* → *"Pomożesz mi?"*).
 
-**Never drop:** information the story needs (facts, names on first mention, numbers, times, places), negations and conditions, the point of a joke, irony, threats and promises, the character's register and emotion.
+**Never drop:** information the story needs (facts, names on first mention, numbers, times, places), the subject or key noun that the next line reacts to (e.g. don't cut *"physician's assistants"* or *"a pimp"* when the next cue answers it), negations and conditions (*"If I had missed the burial, then so be it"* must keep the condition, not just *"Trudno"*), the point of a joke, irony, threats and promises, the character's register and emotion.
+
+**Sentences split across two cues:** make sure the two Polish cues form one grammatical sentence when read together. Never drop the verb from both halves (e.g. *"Don't you ever put your hands..."* / *"- on my daughter again!"* must not become *"Nigdy więcej..."* / *"- do mojej córki!"* without *"tknąć/dotknąć"*).
 
 **Natural Polish, not a calque.**
 - Polish idioms: *"It's raining cats and dogs"* → *"Leje jak z cebra"*, *"I'm on it"* → *"Już się robi"*.
-- Wordplay that can't be kept: a Polish joke with the same function. Unknown cultural references: a general equivalent (*"a real Benedict Arnold"* → *"zdrajca"*).
+- Wordplay that can't be kept: a Polish joke with the same function, designed across all cues of the exchange (e.g. if a scene plays on *"but"* / *"butt"* and *"No God but God"*, use a Polish paronym pair such as *"tylko"* / *"tyłki"* and *"Nie ma boga, tylko Bóg"* consistently in every cue of the scene). Unknown cultural references: a general equivalent (*"a real Benedict Arnold"* → *"zdrajca"*).
 - Units: metric when the exact number doesn't matter (*"a mile away"* → *"kawał drogi stąd"*); keep numbers that matter for the plot or joke. Money keeps its currency.
-- Swearing: natural Polish of the same strength, varied, never stronger than the original.
-- **Echoes and callbacks:** when a speaker repeats or questions a word from the previous line (*"The word for that is 'providence'."* → *"The word for what?"*), both lines must use the same Polish word (*"Właściwe słowo to «opatrzność»."* → *"Słowo na co?"*). A free paraphrase of the first line breaks the exchange.
+- **Numbers and quantities:** never drop a number (e.g. *"Forty-five? You're fine, dude"* → *"45? Dasz radę, stary."*) to fit the reading budget. If writing the number out in words (*"czterdzieści pięć"*) is too long for the budget, use digits (*"45?"*) or two short lines, but never erase the number itself—especially when it answers a question or punchline from the preceding line.
+- **Swearing and sexual/crude slang — never bowdlerize:** use natural Polish of the same strength and register, varied, never stronger than the original, but **never sanitize or euphemize** crude humour, sexual slang or religious/political insults (*"got his first hard on"* → *"pierwszy raz mu stanął"*, never *"poczuł krew"*; *"best fucking head"* → *"najlepszy lód"*, never *"najlepsza zabawa"*; *"side-chick"* → *"kochanka na zastępstwie"*, never *"ktoś do pomocy"*).
+- **Echoes and callbacks:** when a speaker repeats or questions a word from the previous line (*"The word for that is 'providence'."* → *"The word for what?"*), both lines must use the same Polish word (*"Jest na to słowo: «opatrzność»."* → *"Jakie słowo? Na co?"*). A free paraphrase of the first line breaks the exchange.
+- **Short follow-up questions:** English points back with a bare preposition (*"Of what?"*, *"For what?"*, *"Like what?"*, *"With who?"*, *"The word for what?"*); in Polish a bare *"Czego?"* or *"Na co?"* loses what it refers to, and *"Czego?"* / *"Co?"* alone sound rude (*"czego chcesz?!"*). Repeat the noun or use the Polish way of asking: *"I need a photo for my book." - "Of what?"* → *"Zdjęcie czego?"* (not *"Czego?"*); *"Like what?"* → *"Na przykład?"* / *"Co takiego?"*; *"For what?"* → *"Po co?"* / *"Na co ci to?"*. Always read a one- or two-word question together with the line before it.
 
 **Faithful translation** on request ("dokładne", "wierne", "bez skracania"): translate everything, drop only pure filler, still within 2 × 42 characters.
 
@@ -209,7 +219,12 @@ Ask whether to review. **Default: yes** (always in full auto).
 python "$S/subs_tool.py" review-split "<output.srt>" "<source.srt>" --out-dir "$W" --batch-size 150
 ```
 
-Each `review_NNN.json` item has `index`, `original`, `translation` and `cps` when it reads faster than 17 characters per second. Review like a senior subtitle editor, **reading dialogue sequences in context** (yourself or with reviewer subagents), never as a regex or CPS pass. For gender doubts use `frames` with `<output.srt>` (the indexes are those of the translated file). Report only **real** defects:
+`review-split` automatically:
+1. combines **all** source cues overlapping a joined Polish cue (so the second half of a merged sentence is never missing from `original`),
+2. finds an English SDH file in the folder—or extracts the English SDH track from the video into `$W/sdh_context.srt`—and attaches speaker labels and sound notes as `{sdh: SPEAKER (NOTE)}` lines in `original`,
+3. flags distant recurring quotes across the film with `repeated_at: [{"index", "translation"}]` so bookend scenes can be checked for consistency.
+
+Each `review_NNN.json` item has `index`, `original`, `translation`, `cps` (when it reads faster than 17 characters per second) and `repeated_at` (when the same source line appears elsewhere in the film). Review like a senior subtitle editor, **reading dialogue sequences in context** (yourself or with reviewer subagents), never as a regex or CPS pass. Use `{sdh: ...}` lines to verify who is speaking (`FATIHA:` vs `LATIF:`) and to whom. For remaining visual doubts use `frames` with `<output.srt>` (the indexes are those of the translated file). Report only **real** defects:
 
 - `translation`: wrong meaning, lost information, wrong name/number/unit
 - `coherence`: an answer that doesn't fit the question, a lost echo or callback between speakers
@@ -224,13 +239,14 @@ Condensing and dropping filler are **not** defects; dropping information the sto
 **Read the whole film.** The defects left most often are visible only across cues:
 - an answer that doesn't fit the question (*"Nie kucharzem. Pisarzem."* after *"Młody mówi, że gotuje"* → the question must say *"jest kucharzem"*),
 - a running joke or mispronounced word that must stay the same each time (*"building's Roman"*; don't "fix" it the first time),
-- callbacks between distant scenes (*"Czarne nie znaczy przypalone"* early and at the end),
+- callbacks and bookend quotes between distant scenes (`repeated_at`: e.g. a parable or proverb read at the beginning and at the end of the film must use the same Polish wording),
+- consistent family terms, nicknames and proper names from the first batch to the last (e.g. if *"Baba"* is translated as *"tato"*, never switch to raw *"Baba"* / *"babę"* / *"baba"* in later batches; keep one spelling and Polish declension for names like *Khadija* → *Khadiji*, *z Khadiją*; never confuse a character's name like *Fatiha* with a religious term like *Al-Fatiha*),
 - tense and person (*"I think I got it"* → *"chyba je dostałem"*, not *"dostanę"*),
 - agreement across a line break (*"na kałamarnice, od którego"* → *"na gulasz z kałamarnicy, od którego"*),
 - `pan`/`ty` changing inside one conversation for no reason,
 - signs and letters written the Polish way (*"To whom it may concern"* → *"Szanowni Państwo,"*).
 
-**Polish naturalness**, typical calques: *"Przysięgam"* for a casual *"I swear"* (→ *"Serio"*, *"Mówię ci"*), *"Ta, ta, ta"* (→ *"Tak, tak"*), stiff words in casual speech (*"wadzi"*), *"Start o 11:00"* (→ *"Zaczynamy o 11:00"*), a swear word without commas (→ *"Kurwa, ideał."*), an object English left implied (*"Rzucam to"* → *"Rzucam studia"*), food names word for word (*"basy pasiaste"* → *"bassy"*).
+**Polish naturalness**, typical calques: *"Przysięgam"* for a casual *"I swear"* (→ *"Serio"*, *"Mówię ci"*), *"Ta, ta, ta"* (→ *"Tak, tak"*), stiff words in casual speech (*"wadzi"*), *"Start o 11:00"* (→ *"Zaczynamy o 11:00"*), a swear word without commas (→ *"Kurwa, ideał."*), an object English left implied (*"Rzucam to"* → *"Rzucam studia"*), food names word for word (*"basy pasiaste"* → *"bassy"*), bare follow-up questions copied from English (*"Of what?"* → *"Czego?"* → *"Zdjęcie czego?"*; see "Short follow-up questions"). Check every one- or two-word question against the line before it: does a Polish viewer know what it asks about, and does it sound polite enough for the scene?
 
 **Scores.** Before applying, score **fidelity**, **Polish naturalness** and **overall** from 1 to 10; after applying, score again. Show both in a short table, then the main meaning errors (before → after, why) and the main unnatural phrasings.
 

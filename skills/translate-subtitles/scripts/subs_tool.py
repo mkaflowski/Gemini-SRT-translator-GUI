@@ -54,7 +54,7 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from srt_merge import Cue, clean_cues, format_srt, parse_srt, read_text, parse_merged_name  # noqa: E402
+from srt_merge import Cue, clean_cues, extract_sdh_context, format_srt, parse_srt, read_text, parse_merged_name  # noqa: E402
 from srt_fix import CPS, MAX_LEN, MAX_LINES, MIN_GAP, char_count, fix_cue_lines, fix_srt, has_slash_break  # noqa: E402
 
 # How long Fix subs may keep a subtitle on screen after the speech ends, counted in the
@@ -107,7 +107,8 @@ def lang_from_name(path):
 
 def probe_tracks(video):
     cmd = ['ffprobe', '-v', 'error', '-select_streams', 's',
-           '-show_entries', 'stream=index,codec_name:stream_tags=language,title:stream_disposition=default,forced',
+           '-show_entries', 'stream=index,codec_name:stream_tags=language,title:'
+                            'stream_disposition=default,forced,hearing_impaired,captions',
            '-of', 'json', video]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
@@ -118,13 +119,17 @@ def probe_tracks(video):
     for i, s in enumerate(streams):
         tags, disp = s.get('tags', {}) or {}, s.get('disposition', {}) or {}
         codec = s.get('codec_name', '') or ''
+        title = tags.get('title', '') or ''
+        is_sdh = bool(disp.get('hearing_impaired') or disp.get('captions')
+                      or re.search(r'sdh|hearing|cc\b', title, re.IGNORECASE))
         tracks.append({
             'track': i,
             'language': norm_lang(tags.get('language', '')) or tags.get('language', '') or 'und',
-            'title': tags.get('title', '') or '',
+            'title': title,
             'codec': codec,
             'default': bool(disp.get('default')),
             'forced': bool(disp.get('forced')),
+            'sdh': is_sdh,
             'extractable': codec.lower() in TEXT_CODECS,
         })
     return tracks
@@ -170,31 +175,37 @@ def _sub_tags(name):
 
 def source_plan(video, subs, n_videos):
     """Default sources for one video: the English base, the best reference language
-    (REFERENCE_ORDER) and the tracks to extract from the video for what is missing."""
+    (REFERENCE_ORDER), optional English SDH context and extra top reference languages."""
     stem = os.path.splitext(video['file'])[0] if video else ''
     own = [s for s in subs if n_videos <= 1 or s['file'].startswith(stem)]
     single = [s for s in own if s['language'] and '+' not in s['language']
               and not _sub_tags(s['file'])[0]]
     # plain before SDH (cleaning removes the notes, but a plain file has less to remove)
     base = sorted((s for s in single if s['language'] == 'en'), key=lambda s: _sub_tags(s['file'])[1])
+    en_sdh_files = [s['file'] for s in base if _sub_tags(s['file'])[1]]
     refs = sorted((s for s in single if s['language'] not in NOT_REFERENCE),
                   key=lambda s: (_ref_rank(s['language']), _sub_tags(s['file'])[1]))
     merged = [s['file'] for s in own if s['language'] and '+' in s['language']
               and not s['language'].endswith('+ar')]
     plan = {'video': video['file'] if video else None,
             'base': base[0]['file'] if base else None,
+            'sdh': en_sdh_files[0] if en_sdh_files else None,
+            'sdh_track': None,
             'reference': refs[0]['file'] if refs else None,
             'reference_lang': refs[0]['language'] if refs else None,
+            'extra_references': [],
             'merged': merged, 'extract_tracks': [], 'extract_langs': []}
     tracks = (video or {}).get('tracks')
     if isinstance(tracks, list):
         usable = [t for t in tracks if t['extractable'] and not t['forced']]
-        sdh = lambda t: bool(re.search(r'sdh|hearing|cc\b', t['title'] or '', re.IGNORECASE))
-        if not plan['base']:
-            en = sorted((t for t in usable if t['language'] == 'en'), key=lambda t: (sdh(t), not t['default']))
-            if en:
-                plan['extract_tracks'].append(en[0]['track'])
-                plan['extract_langs'].append('en')
+        sdh = lambda t: bool(t.get('sdh') or re.search(r'sdh|hearing|cc\b', t.get('title') or '', re.IGNORECASE))
+        en_tracks = sorted((t for t in usable if t['language'] == 'en'), key=lambda t: (sdh(t), not t['default']))
+        if not plan['base'] and en_tracks:
+            plan['extract_tracks'].append(en_tracks[0]['track'])
+            plan['extract_langs'].append('en')
+        en_sdh_tracks = [t for t in en_tracks if sdh(t)]
+        if en_sdh_tracks and not plan['sdh']:
+            plan['sdh_track'] = en_sdh_tracks[0]['track']
         ref = sorted((t for t in usable if t['language'] not in NOT_REFERENCE and t['language'] != 'und'),
                      key=lambda t: (_ref_rank(t['language']), sdh(t)))
         # a track in a better language than every file next to the video wins
@@ -204,6 +215,12 @@ def source_plan(video, subs, n_videos):
             plan['extract_langs'].append(ref[0]['language'])
             plan['reference'] = None
             plan['reference_lang'] = ref[0]['language']
+    chosen_ref_lang = plan['reference_lang']
+    seen_langs = {chosen_ref_lang} if chosen_ref_lang else set()
+    for s in refs:
+        if s['language'] not in seen_langs and _ref_rank(s['language']) < 4:
+            seen_langs.add(s['language'])
+            plan['extra_references'].append({'file': s['file'], 'language': s['language']})
     return plan
 
 
@@ -225,9 +242,12 @@ def cmd_extract(args):
             results.append({'track': idx, 'status': f"bitmap codec {track['codec']} - cannot convert to SRT"})
             continue
         lang = track['language'] if track['language'] != 'und' else f"track{idx}"
+        is_sdh = bool(track.get('sdh'))
         target = f"{stem}.{lang}.srt"
 
         def numbered():
+            if is_sdh and not os.path.exists(f"{stem}.{lang}.sdh.srt") and f"{stem}.{lang}.sdh.srt" not in created:
+                return f"{stem}.{lang}.sdh.srt"
             n = 2
             while os.path.exists(f"{stem}.{n}.{lang}.srt") or f"{stem}.{n}.{lang}.srt" in created:
                 n += 1
@@ -306,6 +326,36 @@ def char_budget(cues, i, cps=CPS):
 MAX_BATCH = 150  # above this a model loses track of the cues and shifts them (seen at 300)
 
 
+def _repeat_key(text):
+    """Normalized word tuple of a cue's main text for finding repeated quotes across the film."""
+    main = '\n'.join(l for l in str(text).split('\n')
+                     if not l.lstrip().startswith('{') and 'BRAK NAPIS' not in l)
+    words = _ANCHOR_WORD_RE.findall(_TAG_RE.sub(' ', main).lower())
+    plain = ' '.join(words)
+    return tuple(words) if len(words) >= 4 and len(plain) >= 18 else None
+
+
+def _find_distant_repeats(texts, min_distance=15, max_occurrences=5):
+    """Map cue index (0-based) -> list of other 0-based indexes with the same _repeat_key
+    at least `min_distance` cues away."""
+    by_key = {}
+    for idx, t in enumerate(texts):
+        k = _repeat_key(t)
+        if k:
+            by_key.setdefault(k, []).append(idx)
+    repeats = {}
+    for positions in by_key.values():
+        if not (2 <= len(positions) <= max_occurrences):
+            continue
+        if positions[-1] - positions[0] < min_distance:
+            continue
+        for pos in positions:
+            others = [p for p in positions if abs(p - pos) >= min_distance]
+            if others:
+                repeats[pos] = others
+    return repeats
+
+
 def cmd_split(args):
     if args.batch_size > MAX_BATCH and not args.large_batches:
         out({'error': f'batch size {args.batch_size} is over {MAX_BATCH}',
@@ -322,11 +372,17 @@ def cmd_split(args):
     for old in glob.glob(os.path.join(glob.escape(args.out_dir), 'batch_*.json')) + done:
         os.remove(old)
 
+    repeats = _find_distant_repeats([c.text for c in cues])
+
     def item(i):
         return {'index': str(i + 1), 'text': cues[i].text}
 
     def to_translate(i):
-        return dict(item(i), max_chars=char_budget(cues, i))
+        d = dict(item(i), max_chars=char_budget(cues, i))
+        earlier = [p for p in repeats.get(i, []) if p < i]
+        if earlier:
+            d['earlier_cue'] = str(earlier[0] + 1)
+        return d
 
     if args.fixed:
         ranges = [(s, min(s + args.batch_size, len(cues))) for s in range(0, len(cues), args.batch_size)]
@@ -1041,31 +1097,125 @@ def _overlap(a, b):
     return min(a.end, b.end) - max(a.start, b.start)
 
 
+def _combine_overlapping_cues(cands):
+    """Join all source cues that overlap a (possibly joined) translated cue, keeping
+    main lines first and deduplicated {xx: ...} reference lines below."""
+    if not cands:
+        return ''
+    if len(cands) == 1:
+        return '\n'.join(cands[0].lines + cands[0].extras)
+    main_lines, ref_lines = [], []
+    for c in cands:
+        for ln in list(c.lines) + list(c.extras):
+            if ln.lstrip().startswith('{'):
+                if ln not in ref_lines:
+                    ref_lines.append(ln)
+            else:
+                main_lines.append(ln)
+    return '\n'.join(main_lines + ref_lines)
+
+
+def _auto_find_or_extract_sdh(translated_path, source_path, out_dir, explicit_sdh=None):
+    """Find an English SDH subtitle file next to the source/translated file, or extract
+    an English SDH track from the video in the same folder into `out_dir/sdh_context.srt`."""
+    if explicit_sdh and os.path.exists(explicit_sdh):
+        return os.path.abspath(explicit_sdh)
+    folders = []
+    for p in (source_path, translated_path, out_dir):
+        if p:
+            d = os.path.abspath(p if os.path.isdir(p) else os.path.dirname(os.path.abspath(p)))
+            if d and d not in folders and os.path.isdir(d):
+                folders.append(d)
+    for folder in folders:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            if not name.lower().endswith('.srt'):
+                continue
+            forced, is_sdh = _sub_tags(name)
+            if not forced and is_sdh and lang_from_name(name) == 'en':
+                return os.path.join(folder, name)
+    # Try extracting an English SDH track from a video in the folder
+    for folder in folders:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            if os.path.splitext(name)[1].lower() not in VIDEO_EXT:
+                continue
+            video = os.path.join(folder, name)
+            tracks = probe_tracks(video)
+            if not isinstance(tracks, list):
+                continue
+            en_tracks = [t for t in tracks if t.get('extractable') and not t.get('forced') and t.get('language') == 'en']
+            sdh_tracks = [t for t in en_tracks if t.get('sdh')]
+            chosen = sdh_tracks[0] if sdh_tracks else (en_tracks[1] if len(en_tracks) > 1 else None)
+            if chosen is not None:
+                os.makedirs(out_dir, exist_ok=True)
+                target = os.path.join(out_dir, 'sdh_context.srt')
+                cmd = ['ffmpeg', '-y', '-v', 'error', '-i', video, '-map', f"0:s:{chosen['track']}", '-c:s', 'srt', target]
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+                if res.returncode == 0 and os.path.exists(target):
+                    return os.path.abspath(target)
+    return None
+
+
 def cmd_review_split(args):
     translated = parse_srt(read_text(args.translated))
     original = sorted(parse_srt(read_text(args.source)), key=lambda c: (c.start, c.end))
     import bisect
     starts = [c.start for c in original]
+
+    sdh_path = None
+    sdh_cues, sdh_starts = [], []
+    has_inline_sdh = any('{sdh:' in c.text.lower() for c in original)
+    if not getattr(args, 'no_sdh', False) and not has_inline_sdh:
+        sdh_path = _auto_find_or_extract_sdh(args.translated, args.source, args.out_dir,
+                                             getattr(args, 'sdh', None))
+        if sdh_path and os.path.exists(sdh_path):
+            try:
+                sdh_cues = sorted(parse_srt(read_text(sdh_path)), key=lambda c: (c.start, c.end))
+                sdh_starts = [c.start for c in sdh_cues]
+            except Exception:
+                sdh_cues, sdh_starts = [], []
+
     pairs = []
+    sdh_attached = 0
     for n, cue in enumerate(translated, 1):
-        if len(cue.lines) == 1 and STAMP_RE.match(cue.lines[0].strip()):
+        if len(cue.lines) == 1 and STAMP_RE.match(c := cue.lines[0].strip()):
             continue
         lo = max(0, bisect.bisect_left(starts, cue.start) - 2)
-        best, best_ratio = None, 0.0
+        while lo > 0 and original[lo - 1].end > cue.start:
+            lo -= 1
+        matched = []
         for cand in original[lo:]:
             if cand.start >= cue.end:
                 break
             ov = _overlap(cand, cue)
             if ov > 0:
                 ratio = ov / (min(cand.duration, cue.duration) or 1)
-                if ratio > best_ratio:
-                    best, best_ratio = cand, ratio
-        pair = {'index': str(n), 'original': best.text if best and best_ratio >= 0.2 else '',
+                if ratio >= 0.2:
+                    matched.append(cand)
+        orig_text = _combine_overlapping_originals_for_review(matched, cue, sdh_cues, sdh_starts)
+        if '{sdh:' in orig_text:
+            sdh_attached += 1
+        pair = {'index': str(n), 'original': orig_text,
                 'translation': cue.text}
         cps = char_count(cue.lines) / max(cue.end - cue.start, 1) * 1000
         if cps > CPS:
             pair['cps'] = round(cps, 1)  # faster than a viewer reads: a candidate for condensing
         pairs.append(pair)
+
+    repeats = _find_distant_repeats([p['original'] for p in pairs])
+    for pos, other_positions in repeats.items():
+        pairs[pos]['repeated_at'] = [
+            {'index': pairs[o]['index'], 'translation': pairs[o]['translation']}
+            for o in other_positions
+        ]
+
     os.makedirs(args.out_dir, exist_ok=True)
     for old in glob.glob(os.path.join(glob.escape(args.out_dir), 'review_*.json')):
         os.remove(old)
@@ -1079,15 +1229,44 @@ def cmd_review_split(args):
         json.dump({'translated': os.path.abspath(args.translated),
                    'sha256': _file_hash(args.translated)}, fh)
     out({'pairs': len(pairs), 'without_source': sum(1 for p in pairs if not p['original']),
-         'batches': files, 'merged_source': parse_merged_name(args.source)})
+         'batches': files, 'merged_source': parse_merged_name(args.source),
+         'sdh_source': os.path.basename(sdh_path) if sdh_path else None,
+         'sdh_attached': sdh_attached,
+         'repeated_cues': len(repeats)})
+
+
+def _combine_overlapping_originals_for_review(matched, cue, sdh_cues, sdh_starts):
+    """Combine overlapping source cues and attach any matching SDH speaker/sound notes."""
+    import bisect
+    orig_text = _combine_overlapping_cues(matched)
+    if not sdh_cues:
+        return orig_text
+    lo = max(0, bisect.bisect_left(sdh_starts, cue.start) - 2)
+    while lo > 0 and sdh_cues[lo - 1].end > cue.start:
+        lo -= 1
+    notes = []
+    for cand in sdh_cues[lo:]:
+        if cand.start >= cue.end:
+            break
+        ov = _overlap(cand, cue)
+        if ov > 0 and ov / (min(cand.duration, cue.duration) or 1) >= 0.2:
+            note = extract_sdh_context(cand.lines)
+            if note and note not in notes:
+                notes.append(note)
+    if notes:
+        sdh_line = f"{{sdh: {'; '.join(notes)}}}"
+        orig_text = f"{orig_text}\n{sdh_line}".strip() if orig_text else sdh_line
+    return orig_text
 
 
 def cmd_clean(args):
     cues = parse_srt(read_text(args.srt))
+    sdh_as_ref = getattr(args, 'sdh_as_ref', False)
     removed_examples = [c.text for c in cues
                         if not clean_cues([Cue(c.start, c.end, list(c.lines))],
                                           music=not args.keep_music, sdh=not args.keep_sdh)[0]][:8]
-    cleaned, stats = clean_cues(cues, music=not args.keep_music, sdh=not args.keep_sdh)
+    cleaned, stats = clean_cues(cues, music=not args.keep_music, sdh=not args.keep_sdh,
+                                sdh_as_ref=sdh_as_ref)
     with open(args.output, 'w', encoding='utf-8', newline='') as fh:
         fh.write(format_srt(cleaned))
     out({'output': os.path.abspath(args.output), 'cues_before': len(cues), 'cues_after': len(cleaned),
@@ -1190,7 +1369,7 @@ def verify_cues(cues, source=None, max_len=MAX_LEN, cps_limit=CPS):
         if fillers:
             add('filler', i, c, f'hesitation sound {", ".join(dict.fromkeys(fillers))}: drop it '
                                 'unless the hesitation itself matters in the scene')
-        if re.search(r'\{[a-z]{2}:|BRAK NAPISÓW| / |[—–]', c.text):
+        if re.search(r'\{[a-z]{2,3}:|BRAK NAPISÓW| / |[—–]', c.text):
             add('leftovers', i, c, 'reference line, marker, slash break or long dash')
         quote_styles['„”'] += len(re.findall('[„”]', text))
         quote_styles['""'] += text.count('"')
@@ -1281,6 +1460,8 @@ def main():
 
     p = sub.add_parser('clean'); p.add_argument('srt'); p.add_argument('-o', '--output', required=True)
     p.add_argument('--keep-music', action='store_true'); p.add_argument('--keep-sdh', action='store_true')
+    p.add_argument('--sdh-as-ref', action='store_true',
+                   help='keep speaker labels and SDH notes as {sdh: ...} reference lines instead of dropping them')
     p.set_defaults(func=cmd_clean)
 
     p = sub.add_parser('split'); p.add_argument('srt'); p.add_argument('--out-dir', required=True)
@@ -1321,6 +1502,8 @@ def main():
 
     p = sub.add_parser('review-split'); p.add_argument('translated'); p.add_argument('source')
     p.add_argument('--out-dir', required=True); p.add_argument('--batch-size', type=int, default=150)
+    p.add_argument('--sdh', help='optional English SDH subtitle file to attach speaker/sound context')
+    p.add_argument('--no-sdh', action='store_true', help='do not auto-attach or extract SDH context')
     p.set_defaults(func=cmd_review_split)
 
     p = sub.add_parser('review-apply'); p.add_argument('translated'); p.add_argument('fixes'); p.add_argument('--no-timing', action='store_true', help='do not alter display times')

@@ -122,6 +122,24 @@ def _overlap(a: Cue, b: Cue) -> int:
     return min(a.end, b.end) - max(a.start, b.start)
 
 
+def _combine_overlapping_originals(cands: Sequence[Cue]) -> str:
+    """Połącz wszystkie napisy oryginału pokrywające się ze scalonym napisem tłumaczenia."""
+    if not cands:
+        return ""
+    if len(cands) == 1:
+        return "\n".join(cands[0].lines)
+    main_lines: list[str] = []
+    ref_lines: list[str] = []
+    for c in cands:
+        for ln in c.lines:
+            if ln.lstrip().startswith("{"):
+                if ln not in ref_lines:
+                    ref_lines.append(ln)
+            else:
+                main_lines.append(ln)
+    return "\n".join(main_lines + ref_lines)
+
+
 def build_pairs(translated: Sequence[Cue], original: Sequence[Cue],
                 min_overlap: float = 0.2) -> list[dict]:
     """Zestaw napisy tłumaczenia z napisami oryginału po czasie wyświetlania."""
@@ -134,7 +152,9 @@ def build_pairs(translated: Sequence[Cue], original: Sequence[Cue],
         if len(cue.lines) == 1 and STAMP_RE.match(cue.lines[0].strip()):
             continue
         lo = max(0, bisect.bisect_left(starts, cue.start) - 2)
-        best, best_ratio = None, 0.0
+        while lo > 0 and original[lo - 1].end > cue.start:
+            lo -= 1
+        matched: list[Cue] = []
         for cand in original[lo:]:
             if cand.start >= cue.end:
                 break
@@ -142,12 +162,12 @@ def build_pairs(translated: Sequence[Cue], original: Sequence[Cue],
             if ov <= 0:
                 continue
             ratio = ov / (min(cand.end - cand.start, cue.end - cue.start) or 1)
-            if ratio > best_ratio:
-                best, best_ratio = cand, ratio
+            if ratio >= min_overlap:
+                matched.append(cand)
         pairs.append({
             "index": str(n),
             "time": format_time(cue.start),
-            "original": "\n".join(best.lines) if best and best_ratio >= min_overlap else "",
+            "original": _combine_overlapping_originals(matched),
             "translation": "\n".join(cue.lines),
             "cue": cue,
         })
@@ -197,9 +217,9 @@ def build_instruction(language: str, description: str = "", merged_langs=None) -
     ]
 
     if merged_langs:
-        base, other = merged_langs
+        base, other = merged_langs[0], "/".join(merged_langs[1:])
         parts.append(
-            f"## The original file is bilingual\n{gst_description(base, other)}\n"
+            f"## The original file is bilingual\n{gst_description(*merged_langs)}\n"
             f"Treat the `{{{other}: ...}}` lines as a **second reference translation of the "
             "same moment**: use them to confirm meaning, grammatical gender and formality. "
             "When the original shows the missing-subtitle marker, the translation was made "
