@@ -2,7 +2,7 @@
 
 `translate-subtitles/` is a skill that runs the same subtitle translation workflow as this app (find or extract the subtitles, merge EN+FR, look up the movie, translate in batches, Fix subs, AI review), with the agent doing the translation itself.
 
-It is a plain folder with `SKILL.md` and scripts, so it works anywhere that supports Agent Skills. Copy (or symlink) the whole `translate-subtitles` folder to:
+It is a plain folder with `SKILL.md`, `references/` (the translator and reviewer briefs, the glossary template) and `scripts/`, so it works anywhere that supports Agent Skills. Copy (or symlink) the whole `translate-subtitles` folder to:
 
 | Tool | Global | Per project |
 |---|---|---|

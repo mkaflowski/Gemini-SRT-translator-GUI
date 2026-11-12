@@ -559,3 +559,43 @@ def test_review_split_combines_joined_cues_attaches_sdh_and_flags_repeats(tmp_pa
     assert items[0]["repeated_at"] == [{"index": "21", "translation": "Kto zasługuje na moje dobre serce?"}]
     assert items[-1]["repeated_at"] == [{"index": "1", "translation": "Kto zasługuje na mój szacunek?"}]
 
+
+
+def test_review_apply_needs_a_verdict_for_every_review_batch(work):
+    src, w = work
+    pl = src.parent / "Film.pl.srt"
+    pl.write_text(SRT.replace("Line number", "Linia numer"), encoding="utf-8")
+    rc, res = run("review-split", str(pl), str(src), "--out-dir", str(w), "--batch-size", "10")
+    assert rc == 0 and res["batches"] == ["review_001.json", "review_002.json"]
+
+    fixes = w / "fixes.json"
+    fixes.write_text(json.dumps([{"index": "2", "text": "Poprawiona linia."}]), encoding="utf-8")
+    (w / "reviewed_001.json").write_text(json.dumps({"first": "1", "last": "10", "defects": 1}), encoding="utf-8")
+    # batch 2: a verdict that was not written from the batch (wrong last index)
+    (w / "reviewed_002.json").write_text(json.dumps({"first": "11", "last": "20", "defects": 0}), encoding="utf-8")
+
+    rc, res = run("review-apply", str(pl), str(fixes))
+    assert rc == 2 and [b["batch"] for b in res["review"]["not_reviewed"]] == ["review_002.json"]
+    assert "Poprawiona" not in pl.read_text(encoding="utf-8")
+
+    (w / "reviewed_002.json").write_text(json.dumps({"first": "11", "last": "15", "defects": 1}), encoding="utf-8")
+    more = w / "fixes_002.json"  # a second reviewer's file, applied in the same call
+    more.write_text(json.dumps([{"index": "12", "text": "Druga poprawka."}]), encoding="utf-8")
+    rc, res = run("review-apply", str(pl), str(fixes), str(more))
+    assert rc == 0 and res["applied"] == 2
+    assert res["review"] == {"batches": 2, "reviewed": 2, "defects_reported": 2}
+    text = pl.read_text(encoding="utf-8")
+    assert "Poprawiona linia." in text and "Druga poprawka." in text
+
+    # a later round of fixes still passes: the verdicts stay valid after applying
+    fixes.write_text(json.dumps([{"index": "3", "text": "Trzecia."}]), encoding="utf-8")
+    rc, res = run("review-apply", str(pl), str(fixes))
+    assert rc == 0 and res["applied"] == 1
+
+    # a new review-split drops the old verdicts; --partial applies anyway
+    rc, _ = run("review-split", str(pl), str(src), "--out-dir", str(w), "--batch-size", "10")
+    assert rc == 0 and not (w / "reviewed_001.json").exists()
+    fixes.write_text(json.dumps([{"index": "4", "text": "Czwarta."}]), encoding="utf-8")
+    assert run("review-apply", str(pl), str(fixes))[0] == 2
+    rc, res = run("review-apply", str(pl), str(fixes), "--partial")
+    assert rc == 0 and res["applied"] == 1 and len(res["review"]["not_reviewed"]) == 2

@@ -27,9 +27,11 @@ Subcommands (all print JSON on stdout, so an AI agent can read the result):
                                     replaces an existing stamp instead of adding a second one)
   review-split <translated> <source> --out-dir DIR [--batch-size 150]
                                     pair translation with source by time, for the review
-  review-apply <translated> <fixes.json> [--force]
+  review-apply <translated> <fixes.json> [more fixes files] [--force] [--partial]
                                     apply corrected lines [{"index": "12", "text": "..."}], re-wrapped;
-                                    refuses when the file changed after review-split
+                                    refuses when the file changed after review-split, or when a review
+                                    batch has no verdict file reviewed_NNN.json
+                                    ({"first": "1", "last": "150", "defects": 3}; --partial skips that)
   verify <srt> [--json-out FILE]    mechanical checks of the finished file (after Fix subs): timing,
                                     empty cues, line length, reading speed, capital letters left
                                     mid-sentence by joined cues, one-letter words at line ends,
@@ -1217,8 +1219,9 @@ def cmd_review_split(args):
         ]
 
     os.makedirs(args.out_dir, exist_ok=True)
-    for old in glob.glob(os.path.join(glob.escape(args.out_dir), 'review_*.json')):
-        os.remove(old)
+    for pattern in ('review_*.json', 'reviewed_*.json'):  # old verdicts describe other batches
+        for old in glob.glob(os.path.join(glob.escape(args.out_dir), pattern)):
+            os.remove(old)
     files = []
     for b, start in enumerate(range(0, len(pairs), args.batch_size), 1):
         path = os.path.join(args.out_dir, f'review_{b:03d}.json')
@@ -1227,7 +1230,7 @@ def cmd_review_split(args):
         files.append(os.path.basename(path))
     with open(os.path.join(args.out_dir, REVIEW_META), 'w', encoding='utf-8') as fh:
         json.dump({'translated': os.path.abspath(args.translated),
-                   'sha256': _file_hash(args.translated)}, fh)
+                   'sha256': _file_hash(args.translated), 'batches': files}, fh)
     out({'pairs': len(pairs), 'without_source': sum(1 for p in pairs if not p['original']),
          'batches': files, 'merged_source': parse_merged_name(args.source),
          'sdh_source': os.path.basename(sdh_path) if sdh_path else None,
@@ -1281,6 +1284,45 @@ def _file_hash(path):
 
 
 REVIEW_META = 'review_meta.json'
+
+
+def review_coverage(out_dir, batches):
+    """Check that every review batch has a verdict file written by whoever read it.
+
+    review_007.json is covered by reviewed_007.json = {"first": "901", "last": "1050",
+    "defects": 4}: the first and last index of the batch (copied from it, like the `src`
+    anchor of a translation) and the number of defects found, 0 included. A review that
+    stopped half way, or a reviewer that never opened a batch, shows up here instead of
+    passing as "no defects".
+    """
+    not_reviewed, defects = [], 0
+    for name in batches:
+        verdict_name = name.replace('review_', 'reviewed_', 1)
+        try:
+            items = _load_json(os.path.join(out_dir, name))
+            first, last = str(items[0]['index']), str(items[-1]['index'])
+        except (OSError, ValueError, LookupError, TypeError):
+            continue  # the batch itself is gone: nothing to hold the verdict against
+        try:
+            verdict = _load_json(os.path.join(out_dir, verdict_name))
+        except OSError:
+            not_reviewed.append({'batch': name, 'problem': f'no {verdict_name}'})
+            continue
+        except ValueError:
+            not_reviewed.append({'batch': name, 'problem': f'{verdict_name} is not valid JSON'})
+            continue
+        if not isinstance(verdict, dict):
+            not_reviewed.append({'batch': name, 'problem': f'{verdict_name} must be an object'})
+            continue
+        count = verdict.get('defects')
+        if (str(verdict.get('first', '')).strip(), str(verdict.get('last', '')).strip()) != (first, last):
+            not_reviewed.append({'batch': name, 'problem': f'{verdict_name} must have "first": "{first}" '
+                                                            f'and "last": "{last}" (the batch\'s first and last index)'})
+        elif isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            not_reviewed.append({'batch': name, 'problem': f'{verdict_name} needs "defects": <number found, 0 if none>'})
+        else:
+            defects += count
+    return not_reviewed, defects
 
 
 # Polish words that must not end a line (typography: a one-letter word or a short
@@ -1396,12 +1438,29 @@ def cmd_verify(args):
 
 
 def cmd_review_apply(args):
-    meta_path = os.path.join(os.path.dirname(os.path.abspath(args.fixes)), REVIEW_META)
-    if os.path.exists(meta_path) and not args.force:
+    work_dir = os.path.dirname(os.path.abspath(args.fixes[0]))
+    meta_path = os.path.join(work_dir, REVIEW_META)
+    meta, coverage = {}, None
+    if os.path.exists(meta_path):
         with open(meta_path, encoding='utf-8') as fh:
             meta = json.load(fh)
-        if (os.path.abspath(args.translated) == meta.get('translated')
-                and _file_hash(args.translated) != meta.get('sha256')):
+        if os.path.abspath(args.translated) != meta.get('translated'):
+            meta = {}  # a review of another file
+    if meta.get('batches'):
+        not_reviewed, defects = review_coverage(work_dir, meta['batches'])
+        coverage = {'batches': len(meta['batches']), 'reviewed': len(meta['batches']) - len(not_reviewed),
+                    'defects_reported': defects}
+        if not_reviewed:
+            coverage['not_reviewed'] = not_reviewed
+            if not args.partial:
+                out({'error': 'the review is not finished: these batches have no valid verdict file. Read '
+                              'them and write reviewed_NNN.json for each ({"first": ..., "last": ..., '
+                              '"defects": N}), or pass --partial to apply the fixes anyway (e.g. only '
+                              'the verify fixes, or the user stopped the review).',
+                     'review': coverage})
+                return 2
+    if meta and not args.force:
+        if _file_hash(args.translated) != meta.get('sha256'):
             out({'error': 'the subtitle file changed after review-split (another tool or session edited '
                           'it), so the review indexes may point at different cues. Run review-split '
                           'again and redo the review on the current file, or pass --force if you are '
@@ -1409,8 +1468,13 @@ def cmd_review_apply(args):
                  'translated': os.path.abspath(args.translated)})
             return 2
     cues = parse_srt(read_text(args.translated))
-    with open(args.fixes, encoding='utf-8') as fh:
-        fixes = json.load(fh)
+    fixes = []
+    for path in args.fixes:  # one file, or one per reviewer (fixes_001.json fixes_002.json ...)
+        loaded = _load_json(path)
+        if not isinstance(loaded, list):
+            out({'error': 'a fixes file must be a JSON list of {"index", "text"} items', 'file': path})
+            return 2
+        fixes.extend(f for f in loaded if isinstance(f, dict))
     applied = []
     deleted = set()
     for fix in fixes:
@@ -1437,14 +1501,16 @@ def cmd_review_apply(args):
         fh.write(format_srt(cues))
     # corrections change text lengths, so display times are fixed again afterwards
     _, fix_stats = fix_srt(args.translated, timing=not getattr(args, 'no_timing', False))
-    if os.path.exists(meta_path):
+    if meta:
         with open(meta_path, 'w', encoding='utf-8') as fh:  # the file is ours again after applying
-            json.dump({'translated': os.path.abspath(args.translated),
-                       'sha256': _file_hash(args.translated)}, fh)
+            json.dump(dict(meta, sha256=_file_hash(args.translated)), fh)
     found = verify_cues(parse_srt(read_text(args.translated)))
-    out({'applied': len(applied), 'deleted': len(deleted), 'changes': applied,
-         'fix': {k: fix_stats.get(k, 0) for k in ('rewrapped', 'extended', 'gaps_fixed')},
-         'verify': {k: len(v) for k, v in found.items()}})
+    report = {'applied': len(applied), 'deleted': len(deleted), 'changes': applied,
+              'fix': {k: fix_stats.get(k, 0) for k in ('rewrapped', 'extended', 'gaps_fixed')},
+              'verify': {k: len(v) for k, v in found.items()}}
+    if coverage:
+        report['review'] = coverage
+    out(report)
 
 
 def main():
@@ -1506,8 +1572,12 @@ def main():
     p.add_argument('--no-sdh', action='store_true', help='do not auto-attach or extract SDH context')
     p.set_defaults(func=cmd_review_split)
 
-    p = sub.add_parser('review-apply'); p.add_argument('translated'); p.add_argument('fixes'); p.add_argument('--no-timing', action='store_true', help='do not alter display times')
+    p = sub.add_parser('review-apply'); p.add_argument('translated')
+    p.add_argument('fixes', nargs='+', help='fixes.json, or several files (one per reviewer)')
+    p.add_argument('--no-timing', action='store_true', help='do not alter display times')
     p.add_argument('--force', action='store_true', help='apply even if the file changed after review-split')
+    p.add_argument('--partial', action='store_true',
+                   help='apply even if some review batches have no reviewed_NNN.json verdict')
     p.set_defaults(func=cmd_review_apply)
 
     p = sub.add_parser('verify'); p.add_argument('srt')
