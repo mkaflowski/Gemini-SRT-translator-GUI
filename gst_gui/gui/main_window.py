@@ -63,6 +63,7 @@ from gst_gui.utils import video_description_with_splitting as vdesc
 from gst_gui.utils import srt_merge
 from gst_gui.utils import srt_fix
 from gst_gui.utils import srt_review
+from gst_gui.utils import auto_prepare
 
 
 class _ConsoleStdout:
@@ -360,6 +361,15 @@ class DragDropGUI:
             fg_color="transparent", border_width=1, text_color=("gray30", "gray70")
         )
         self.describe_video_button.pack(side="right", padx=(0, 5))
+
+        # One click: pick the sources (extract + merge) and run the whole recommended pipeline
+        self.auto_button = ctk.CTkButton(
+            tree_header, text="⚡ Auto", command=self.auto_translate,
+            width=80, height=24, font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=("green", "darkgreen")
+        )
+        self.auto_button.pack(side="right", padx=(0, 15))
+        self._auto_post = None  # post-translation steps chosen in the Auto dialog
 
         # Cache of probed subtitle tracks: {full video path: [track dicts]}
         self._embedded_tracks_cache = {}
@@ -1168,8 +1178,13 @@ class DragDropGUI:
                     break
         self.root.after(0, update)
 
-    def _start_translation(self):
-        """Start translation using translation manager"""
+    def _start_translation(self, auto_post=None):
+        """Start translation using translation manager.
+
+        auto_post ({'fix', 'review', 'rename'} booleans, from the Auto dialog) runs the
+        post-translation steps without asking; a manual start asks as usual.
+        """
+        self._auto_post = auto_post
         if self._post_review_running:
             messagebox.showinfo("AI review", "Wait for the AI review to finish first.")
             return
@@ -1230,7 +1245,15 @@ class DragDropGUI:
         if len(outputs) > 5:
             names += f'\n  ... and {len(outputs) - 5} more'
 
-        if messagebox.askyesno(
+        # Started from the Auto dialog: the steps were chosen there, nothing to ask
+        auto, self._auto_post = self._auto_post, None
+        ask_rename = auto is None
+        if auto is not None and not auto.get('rename'):
+            rename = lambda: None  # noqa: E731
+        else:
+            rename = lambda: self._offer_ai_rename(outputs, ask=ask_rename)  # noqa: E731
+
+        if auto['fix'] if auto is not None else messagebox.askyesno(
                 "Fix subs",
                 f"Translation finished.\n\nRun \"Fix subs\" on the translated files?\n{names}\n\n"
                 "Re-wraps too long lines and fixes display times."):
@@ -1242,28 +1265,29 @@ class DragDropGUI:
         reviewable = [p for p in outputs if p.get('subtitle') and Path(p['subtitle']).exists()]
         if not reviewable:
             self.log_to_console("🔍 AI review skipped - no source subtitle files to compare against")
-        elif messagebox.askyesno(
+        elif auto['review'] if auto is not None else messagebox.askyesno(
                 "AI review",
                 f"Run an AI review of the new subtitles?\n\n"
                 f"Gemini ({config.get('model', '')}) compares the translation with the source\n"
                 f"subtitles it was translated from and applies its fixes.\n\n"
                 f"Files: {len(reviewable)}"):
             # the rename question comes after the review has finished
-            self._run_post_translation_review(
-                reviewable, config, on_done=lambda: self._offer_ai_rename(outputs))
+            self._run_post_translation_review(reviewable, config, on_done=rename)
             return
 
-        self._offer_ai_rename(outputs)
+        rename()
 
-    def _offer_ai_rename(self, outputs):
-        """Ask whether to mark the new files as AI translations ('Film.pl.srt' -> 'Film.ar.srt')"""
+    def _offer_ai_rename(self, outputs, ask=True):
+        """Ask whether to mark the new files as AI translations ('Film.pl.srt' -> 'Film.ar.srt').
+
+        ask=False renames without the question (chosen in the Auto dialog)."""
         code = (self.ai_mark_code.get().strip() if hasattr(self, 'ai_mark_code') else 'ar') or 'ar'
         files = [Path(p['output']) for p in outputs if Path(p['output']).exists()]
         files = [f for f in files if with_language_code(f, code) != f]
         if not files:
             return
         example = f"{files[0].name}  →  {with_language_code(files[0], code).name}"
-        if not messagebox.askyesno(
+        if ask and not messagebox.askyesno(
                 "Mark as AI translation",
                 f"Change the language code in the file name to \"{code}\"?\n\n{example}"
                 + (f"\n(and {len(files) - 1} more)" if len(files) > 1 else "")):
@@ -2200,6 +2224,146 @@ class DragDropGUI:
                 self.root.after(0, lambda: self.log_to_console(
                     "🎞 Embedded subtitle tracks detected - select rows and click "
                     "'🎞 Embedded subs' to choose which one to translate"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ---------- Auto: pick the sources, prepare them, run the recommended pipeline ----------
+
+    def auto_translate(self):
+        """Propose what to translate from (extract + merge) and run the whole pipeline"""
+        if self.translation_manager.is_running() or self._post_review_running:
+            messagebox.showinfo("Auto", "Wait for the current translation to finish first.")
+            return
+        folder = self.current_folder_path if getattr(self, 'current_folder_path', None) else None
+        if not folder or not Path(folder).is_dir():
+            from tkinter import filedialog
+            chosen = filedialog.askdirectory(title="Choose the movie folder")
+            if not chosen:
+                return
+            folder = Path(chosen)
+            self._process_folder(folder)
+
+        target_code = self.language_code.get().strip() if hasattr(self, 'language_code') else 'pl'
+        ai_code = (self.ai_mark_code.get().strip() if hasattr(self, 'ai_mark_code') else 'ar') or 'ar'
+        self.status_var.set("Auto: looking at subtitles and video tracks...")
+        self.auto_button.configure(state="disabled")
+        self.log_to_console(f"⚡ Auto: scanning {folder}")
+
+        def worker():
+            try:
+                plans = auto_prepare.plan_folder(folder, target_code=target_code, ai_code=ai_code,
+                                                 probe=self._probe_tracks_cached)
+                error = None
+            except Exception as exc:  # noqa: BLE001 - shown to the user
+                plans, error = [], str(exc)
+
+            def show():
+                self.auto_button.configure(state="normal")
+                self.status_var.set("Ready")
+                if error:
+                    messagebox.showerror("Auto", f"Could not scan the folder:\n{error}")
+                elif not any(auto_prepare.is_ready(p) for p in plans):
+                    messagebox.showinfo(
+                        "Auto", "No usable subtitles found: no .srt files and no text "
+                                "subtitle tracks in the video (bitmap tracks can't be used).")
+                else:
+                    self._show_auto_dialog(plans, ai_code)
+            self.root.after(0, show)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_auto_dialog(self, plans, ai_code):
+        """Show the proposed sources and the steps to run; nothing happens before 'Start'"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Auto translation")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.geometry(f"+{self.root.winfo_rootx() + 200}+{self.root.winfo_rooty() + 120}")
+
+        ctk.CTkLabel(dialog, text="Proposed sources",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=20, pady=(15, 4))
+        shown = plans[:8]
+        text = "\n".join("\n".join(auto_prepare.describe_plan(p)) for p in shown)
+        if len(plans) > len(shown):
+            text += f"\n... and {len(plans) - len(shown)} more videos, prepared the same way"
+        box = ctk.CTkTextbox(dialog, width=760, height=min(320, 40 + 18 * (text.count("\n") + 1)),
+                             font=ctk.CTkFont(size=11), wrap="none")
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        box.pack(padx=20, pady=(0, 10))
+
+        ctk.CTkLabel(dialog, text="Then", font=ctk.CTkFont(size=13, weight="bold")).pack(
+            anchor="w", padx=20, pady=(0, 4))
+        translate_var = tk.BooleanVar(value=True)
+        fix_var = tk.BooleanVar(value=True)
+        review_var = tk.BooleanVar(value=True)
+        rename_var = tk.BooleanVar(value=True)
+        opts = ctk.CTkFrame(dialog, fg_color="transparent")
+        opts.pack(fill="x", padx=20)
+        ctk.CTkCheckBox(opts, text="Translate", variable=translate_var).pack(anchor="w", pady=2)
+        ctk.CTkCheckBox(opts, text="Fix subs (line breaks, display times)",
+                        variable=fix_var).pack(anchor="w", pady=2)
+        ctk.CTkCheckBox(opts, text="AI review and apply its corrections",
+                        variable=review_var).pack(anchor="w", pady=2)
+        ctk.CTkCheckBox(opts, text=f"Mark the file as an AI translation (.{ai_code}.srt)",
+                        variable=rename_var).pack(anchor="w", pady=2)
+
+        buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill="x", padx=20, pady=(15, 15))
+
+        def on_start():
+            steps = {'translate': translate_var.get(), 'fix': fix_var.get(),
+                     'review': review_var.get(), 'rename': rename_var.get()}
+            dialog.destroy()
+            self._run_auto(plans, steps)
+
+        ctk.CTkButton(buttons, text="Start", command=on_start,
+                      fg_color=("green", "darkgreen")).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(buttons, text="Cancel", command=dialog.destroy,
+                      fg_color="transparent", border_width=1,
+                      text_color=("gray30", "gray70")).pack(side="left")
+
+    def _run_auto(self, plans, steps):
+        """Extract and merge in the background, select the prepared sources, then translate"""
+        self.status_var.set("Auto: preparing the subtitles...")
+        self.auto_button.configure(state="disabled")
+
+        def worker():
+            sources = []
+            for plan in plans:
+                if not auto_prepare.is_ready(plan):
+                    continue
+                try:
+                    source = auto_prepare.execute_plan(plan, log=self.log_to_console)
+                except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
+                    self.log_to_console(f"❌ Auto: {plan.get('video') or 'folder'}: {exc}")
+                    continue
+                if source:
+                    sources.append(Path(source).name)
+
+            def finish():
+                self.auto_button.configure(state="normal")
+                if not sources:
+                    self.status_var.set("Auto: nothing prepared")
+                    messagebox.showwarning("Auto", "Could not prepare any subtitle file - "
+                                                   "see the console for details.")
+                    return
+                self.refresh_file_list()
+                # only the prepared sources stay checked
+                for item in self.tree.get_children():
+                    values = self.tree.item(item, 'values')
+                    wanted = bool(values) and values[0] in sources
+                    if self.tree.item(item, 'text').startswith('☑️') != wanted:
+                        self.toggle_item_checkbox(item)
+                self._update_selected_count()
+                self._sync_merge_context()
+                self.log_to_console(f"⚡ Auto: {len(sources)} source file(s) ready: "
+                                    + ", ".join(sources[:3]) + ("..." if len(sources) > 3 else ""))
+                if not steps['translate']:
+                    self.status_var.set(f"Auto: {len(sources)} source file(s) ready")
+                    return
+                self._start_translation(auto_post=steps)
+            self.root.after(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
 

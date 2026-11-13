@@ -32,7 +32,8 @@ def probe_subtitle_tracks(video_path):
     cmd = [
         'ffprobe', '-v', 'error',
         '-select_streams', 's',
-        '-show_entries', 'stream=index,codec_name:stream_tags=language,title:stream_disposition=default,forced',
+        '-show_entries', 'stream=index,codec_name:stream_tags=language,title:'
+                         'stream_disposition=default,forced,hearing_impaired,captions',
         '-of', 'json',
         str(video_path),
     ]
@@ -59,6 +60,7 @@ def probe_subtitle_tracks(video_path):
             'title': tags.get('title', '') or '',
             'default': bool(disposition.get('default')),
             'forced': bool(disposition.get('forced')),
+            'sdh': bool(disposition.get('hearing_impaired') or disposition.get('captions')),
             'text_based': codec.lower() in TEXT_CODECS,
         })
     return tracks
