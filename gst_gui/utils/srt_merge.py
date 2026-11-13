@@ -258,6 +258,7 @@ _SPEAKER_RE = re.compile(
     r"(?P<label>[A-ZÀ-ÖØ-Þ0-9][A-ZÀ-ÖØ-Þ0-9 '’.\-]{0,24}?)\s*:(?:\s+(?=\S)|\s*$)"
 )
 _TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+_ASS_TAG_RE = re.compile(r"\{\\[^{}]*\}")  # {\an8}, {\pos(10,20)} — tagi pozycji/stylu ASS
 _REF_PASSTHROUGH_RE = re.compile(r"^\s*(\{[a-z]{2,3}:.*\}|\[[a-z]{2,3}:\s*BRAK NAPIS)", re.IGNORECASE)
 _PAREN_SDH_RE = re.compile(r"\[([^\[\]]+)\]|\(([^()]+)\)")
 
@@ -287,7 +288,7 @@ def _remove_spans(text: str, opener: str, closer: str) -> str:
 
 def _is_blank(line: str) -> bool:
     """Czy po wycięciu zostały same śmieci (myślnik, kropki, tagi)?"""
-    return _TAG_RE.sub("", line).strip(" \t-–—.…\"'«»¿?!,:;*•") == ""
+    return _ASS_TAG_RE.sub("", _TAG_RE.sub("", line)).strip(" \t-–—.…\"'«»¿?!,:;*•") == ""
 
 
 def _strip_speaker(line: str, has_lowercase_in_cue: bool = False) -> str:

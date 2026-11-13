@@ -176,6 +176,17 @@ def test_clean_removes_songs_and_sdh(tmp_path):
     assert "Who's there?" in text and "Nobody." in text
 
 
+def test_clean_removes_cue_left_with_only_position_tag(tmp_path):
+    src = tmp_path / "Film.fr.srt"
+    src.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\n{\\an8}(crachat)\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\n{\\an8}Bonjour.\n\n", encoding="utf-8")
+    out = tmp_path / "source.srt"
+    rc, res = run("clean", str(src), "-o", str(out))
+    assert rc == 0 and res["removed_cues"] == 1 and res["cues_after"] == 1
+    assert "{\\an8}Bonjour." in out.read_text(encoding="utf-8")
+
+
 def test_review_apply_fixes_timing_again(work):
     src, w = work
     fixes = w.parent / "fixes.json"
