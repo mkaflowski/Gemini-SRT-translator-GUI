@@ -25,7 +25,7 @@ Report only **real** defects:
 - `spelling`: spelling, grammar, punctuation, typos
 - `unnatural`: correct but not what a Pole would say (calque, word order, register)
 - `gender`: wrong gender, number or formality of the speaker or the listener
-- `condense`: too long to read (`cps`) where a shorter wording keeps the meaning, or a word-for-word rendering of something a subtitler would say in a few words
+- `condense`: too long to read (`cps`) where a shorter wording keeps the meaning, or a word-for-word rendering of something a subtitler would say in a few words. Meaning has priority: never condense so far that the sentence loses its sense; a cue slightly over the reading speed is better than a cut one
 
 Condensing and dropping filler are **not** defects; dropping information the story needs **is**. An acceptable alternative is not a defect. Don't invent defects.
 

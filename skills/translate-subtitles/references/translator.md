@@ -37,7 +37,7 @@ python "$S/subs_tool.py" check --out-dir "$W" --batch 3
 - `src anchor mismatch` (error): the translations are shifted from the reported cue (`it is the text of cue 281`). Don't patch single cues: from the first wrong cue to the end of the batch, compare with the source one by one and retranslate or move the texts back, with a correct `src` for each.
 - `count mismatch`, `index mismatch`, `empty translation` (errors): merged or missing cues, same fix.
 - `shift_suspects` (warning): a run of cues whose texts fit the neighbouring source cues better than their own (`offset: 1` = each cue has the next cue's text). Look at it; if every text matches its own cue, go on.
-- `too long to read`: over `max_chars`; condense it.
+- `too long to read`: over `max_chars`; condense it, unless the shorter wording would lose the sense of the sentence (then leave it slightly over).
 - copied `{xx: ...}` lines or the marker, ` / ` instead of a line break, `—`/`–`, unbalanced tags.
 
 Fix and rerun until clean. Then **update the glossary** with what this batch settled (see its sections: new characters and their gender, `ty`/`pan` pairs, terms, recurring lines, decisions) and report progress ("batch 3/7 done"). If your context is getting full, say so: a new session resumes from `status`.
@@ -56,7 +56,7 @@ One image per subtitle: a 3×2 grid at **-5s, 0, +5s / +10s, +20s, +60s**, each 
 
 A subtitle gives **the meaning, intent and tone** of a line, not every word: the viewer reads it while watching. A good Polish subtitle is usually clearly shorter than a word-for-word translation; dropping a quarter or a third of the words is normal.
 
-**Budget.** `max_chars` is what a viewer reads in the subtitle's time (17 characters per second, spaces count, tags don't), for both lines together. Over it: condense. Well under it: keep the full meaning, don't cut for the sake of it.
+**Budget.** `max_chars` is what a viewer reads in the subtitle's time (17 characters per second, spaces count, tags don't), for both lines together. Over it: condense. Well under it: keep the full meaning, don't cut for the sake of it. **The sense of the sentence has priority over the budget:** drop fillers, repetitions and names first, but when the only shorter wording loses or distorts what is said, keep the meaning and go slightly over the limit.
 
 **Drop or shorten** when the scene doesn't need it: filler (*well, you know, I mean, like, okay, look*) and hesitation sounds (*uh, um, eee, yyy*: a `...` shows the pause), stutters and false starts; repetitions (*"No, no, no!"* → *"Nie!"*); subject pronouns (*"Nie wiem"*, not *"Ja nie wiem"*); names and forms of address once it's clear who talks to whom; tag questions (*right?, okay?*) that add nothing; what the picture shows; long-winded wording (*"Do you think you could possibly help me?"* → *"Pomożesz mi?"*).
 

@@ -149,7 +149,7 @@ Each item has the `index` used by `review-apply`:
 - `timing`, `empty`, `too_many_lines`, `line_too_long`, `tags`, `leftovers`: a broken file (`"ok": false`); fix before going on.
 - `midsentence_capital`: a capital right after a comma, usually a joined cue whose second part started a sentence. Rewrite it as one sentence.
 - `hanging_word`: a line ending in a one-letter word or short preposition (`w`, `z`, `i`, `na`, `do`...); move it to the next line.
-- `too_fast`: condense where no meaning is lost. `spacing`, `quotes`: small typography fixes (`„”` for Polish).
+- `too_fast`: condense where no meaning is lost; where condensing would lose the sense of the sentence, leave it slightly over (meaning has priority). `spacing`, `quotes`: small typography fixes (`„”` for Polish).
 - `filler`: hesitation sounds (`eee`, `yyy`, `hmm`, `um`, `uh`). Subtitles leave them out: the viewer hears them, and `...` shows the pause (*"Nie, to raczej... eee..."* → *"Nie, to raczej..."*). A cue that is only a hesitation (*"Yyy..."*) is deleted with `{"index": "116", "delete": true}` in `fixes.json`. Keep one only when the hesitation itself matters (a joke about someone fumbling, another character reacting to it), written once as `yyy` or `eee`.
 
 Read every joined cue in context as well: it must read as one natural sentence, without a doubled word, a dangling conjunction or punctuation left from the old break. Put corrections into `$W/fixes.json` and apply them with `review-apply` (step 9).
@@ -182,7 +182,7 @@ python "$S/subs_tool.py" review-apply "<output.srt>" "$W/fixes.json" "$W/fixes_0
 - **a review batch has no valid verdict** (`not_reviewed`): read that batch and write its `reviewed_NNN.json`. `--partial` only when the review was really not done (the user declined or stopped it after `review-split`) and you are applying the other fixes; say so in the summary.
 - **`<output.srt>` changed after `review-split`** (another session, an editor, Fix subs again), because the indexes may point at other cues: run `review-split` again and match your fixes by text. `--force` only if you are sure no cue moved.
 
-If more than a few `too_fast` / `quotes` are still reported, fix them in a **new** file (`$W/fixes_round2.json`, indexes from the fresh `verify`) and apply only that one. Never apply the same fixes file twice: after a `delete` the indexes have moved.
+If more than a few `too_fast` / `quotes` are still reported, fix them (except `too_fast` cues left over on purpose to keep the meaning) in a **new** file (`$W/fixes_round2.json`, indexes from the fresh `verify`) and apply only that one. Never apply the same fixes file twice: after a `delete` the indexes have moved.
 
 ## Step 10: Mark the file as an AI translation (always ask)
 
