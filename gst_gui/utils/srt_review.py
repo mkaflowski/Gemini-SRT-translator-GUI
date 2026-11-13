@@ -7,7 +7,12 @@ Porównuje przetłumaczony plik SRT z oryginałem (dopasowanym po czasie) i zgł
 * **hallucination** — treść, której nie ma w oryginale,
 * **spelling**      — literówki, ortografia, interpunkcja, gramatyka,
 * **unnatural**     — kalka, sztuczny szyk, zły rejestr,
-* **gender**        — zły rodzaj gramatyczny albo forma grzecznościowa.
+* **gender**        — zły rodzaj gramatyczny albo forma grzecznościowa,
+* **coherence**     — odpowiedź nie pasuje do pytania, zgubione echo między kwestiami,
+* **condense**      — napis za długi do przeczytania, który da się skrócić bez utraty sensu.
+
+Zasady kontroli są te same, co w skillu ``translate-subtitles``
+(``references/reviewer.md``).
 
 Jeśli plik oryginału jest naszym plikiem scalonym (``Film.en_fr.srt``), do
 promptu trafia dodatkowo wyjaśnienie linii ``{fr: ...}`` i znacznika
@@ -29,19 +34,21 @@ try:
     from gst_gui.utils.srt_merge import (
         Cue, gst_description, parse_merged_name, parse_srt, read_text,
     )
-    from gst_gui.utils.srt_fix import format_time, visible_len
+    from gst_gui.utils.srt_fix import CPS, char_count, format_time, visible_len
 except ImportError:  # uruchamianie pliku bezpośrednio
     from srt_merge import (  # type: ignore
         Cue, gst_description, parse_merged_name, parse_srt, read_text,
     )
-    from srt_fix import format_time, visible_len  # type: ignore
+    from srt_fix import CPS, char_count, format_time, visible_len  # type: ignore
 
 BATCH_MULTIPLIER = 1.5      # batch kontroli = 1,5x batcha tłumaczenia
 DEFAULT_BATCH = 350
-CATEGORIES = ("translation", "hallucination", "spelling", "unnatural", "gender")
+CATEGORIES = ("translation", "coherence", "hallucination", "spelling", "unnatural", "gender",
+              "condense")
 # stopka dopisywana przez tłumacza - nie jest częścią dialogu, nie oceniamy jej
 STAMP_RE = re.compile(r"^#.*(translated by|przetłumaczone).*#$", re.IGNORECASE)
 SEVERITIES = ("high", "medium", "low")
+PAYLOAD_KEYS = ("index", "time", "original", "translation", "cps", "repeated_at")
 
 
 # --------------------------------------------------------------------------- #
@@ -140,6 +147,37 @@ def _combine_overlapping_originals(cands: Sequence[Cue]) -> str:
     return "\n".join(main_lines + ref_lines)
 
 
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def _repeat_key(text: str):
+    """Znormalizowane słowa głównego tekstu napisu — do szukania powtarzanych cytatów."""
+    main = "\n".join(line for line in str(text).split("\n")
+                     if not line.lstrip().startswith("{") and "BRAK NAPIS" not in line)
+    words = _WORD_RE.findall(_TAG_RE.sub(" ", main).lower())
+    return tuple(words) if len(words) >= 4 and len(" ".join(words)) >= 18 else None
+
+
+def find_distant_repeats(texts: Sequence[str], min_distance: int = 15,
+                         max_occurrences: int = 5) -> dict[int, list[int]]:
+    """Pozycja napisu -> pozycje tej samej kwestii oddalone o co najmniej ``min_distance``."""
+    by_key: dict[tuple, list[int]] = {}
+    for idx, text in enumerate(texts):
+        key = _repeat_key(text)
+        if key:
+            by_key.setdefault(key, []).append(idx)
+    repeats: dict[int, list[int]] = {}
+    for positions in by_key.values():
+        if not 2 <= len(positions) <= max_occurrences:
+            continue
+        for pos in positions:
+            others = [p for p in positions if abs(p - pos) >= min_distance]
+            if others:
+                repeats[pos] = others
+    return repeats
+
+
 def build_pairs(translated: Sequence[Cue], original: Sequence[Cue],
                 min_overlap: float = 0.2) -> list[dict]:
     """Zestaw napisy tłumaczenia z napisami oryginału po czasie wyświetlania."""
@@ -164,57 +202,127 @@ def build_pairs(translated: Sequence[Cue], original: Sequence[Cue],
             ratio = ov / (min(cand.end - cand.start, cue.end - cue.start) or 1)
             if ratio >= min_overlap:
                 matched.append(cand)
-        pairs.append({
+        pair = {
             "index": str(n),
             "time": format_time(cue.start),
             "original": _combine_overlapping_originals(matched),
             "translation": "\n".join(cue.lines),
             "cue": cue,
-        })
+        }
+        cps = char_count(cue.lines) / max(cue.end - cue.start, 1) * 1000
+        if cps > CPS:
+            pair["cps"] = round(cps, 1)  # szybciej, niż widz czyta - kandydat do skrócenia
+        pairs.append(pair)
+
+    for pos, others in find_distant_repeats([p["original"] for p in pairs]).items():
+        pairs[pos]["repeated_at"] = [
+            {"index": pairs[o]["index"], "translation": pairs[o]["translation"]} for o in others
+        ]
     return pairs
 
 
 # --------------------------------------------------------------------------- #
 # prompt
 # --------------------------------------------------------------------------- #
+def _is_polish(language: str) -> bool:
+    return (language or "").strip().lower() in ("polish", "polski", "pl", "pol")
+
+
 def build_instruction(language: str, description: str = "", merged_langs=None) -> str:
+    polish = _is_polish(language)
+
+    def ex(text: str) -> str:
+        return f" ({text})" if polish else ""
+
     parts = [
-        f"# ROLE\nYou are a senior subtitle quality reviewer for **{language}** subtitles. "
+        f"# ROLE\nYou are a senior subtitle editor reviewing **{language}** subtitles. "
         "You receive the original subtitle and its translation, matched by timecode, "
-        "and you report defects a professional subtitler would fix.",
+        "and you report defects a professional subtitler would fix. Read the dialogue "
+        "**as sequences in context**, never line by line as a mechanical check.",
 
         "## Categories (use exactly these ids)\n"
         "- `translation` — wrong meaning, mistranslation, essential information lost, "
         "wrong name/number/unit\n"
+        "- `coherence` — an answer that doesn't fit the question, a lost echo or callback "
+        "between speakers\n"
         "- `hallucination` — content in the translation that is not in the original\n"
         f"- `spelling` — spelling, grammar, punctuation or typo errors in {language}\n"
         "- `unnatural` — technically correct but not how a native speaker would say it: "
         "calques, foreign word order, wrong register\n"
         f"- `gender` — wrong grammatical gender, number or level of formality for the "
         f"speaker or the person addressed (in {language} this is often invisible in the "
-        "English source and has to be inferred from context)",
+        "English source and has to be inferred from context)\n"
+        "- `condense` — too long to read (the item has `cps`) where a shorter wording keeps "
+        "the meaning, or a word-for-word rendering of something a subtitler would say in a "
+        "few words. **Meaning has priority**: never condense so far that the sentence loses "
+        "its sense; a subtitle slightly over the reading speed is better than a cut one",
 
         "## Rules\n"
         "- Subtitles are **condensed by design**: shortening, dropping filler words and "
-        "merging sentences are NOT errors. Report a cut only when meaning is lost.\n"
+        "merging sentences are NOT errors. Dropping information the story needs IS.\n"
         "- Report **only real defects**. An acceptable alternative wording is not a defect.\n"
-        "- Judge every line in the context of the surrounding lines you were given.\n"
         "- `severity`: `high` = the viewer is misled or the line is wrong, "
         "`medium` = clearly noticeable, `low` = polish.\n"
         "- `problem`: one sentence, in the language of the subtitles, quoting the exact "
         "offending fragment.\n"
-        "- `suggestion`: a ready-to-use replacement for the whole translated subtitle "
-        "(keep the line breaks), or an empty string if you have none.\n"
+        "- `suggestion`: a ready-to-use replacement for the **whole** translated subtitle, "
+        "or an empty string if you have none. Format: at most 2 lines of up to 42 "
+        "characters (line break `\\n`), `- ` at the start of each line when two people "
+        "speak, a plain hyphen `-` (never `—` or `–`), tags kept"
+        + (", quotes as `„...”`" if polish else "") + ".\n"
+        "- `delete`: set it to `true` (with an empty `suggestion`) only for a subtitle that "
+        "is nothing but a hesitation sound (*uh, um"
+        + (", eee, yyy" if polish else "") + "*). Hesitation sounds inside a longer "
+        "subtitle are dropped in the `suggestion`; a `...` shows the pause.\n"
         "- Return an empty list when a batch has no defects. Never invent defects to fill "
         "the response.",
 
+        "## Read across subtitles\n"
+        "The defects left most often are visible only there:\n"
+        "- an answer that doesn't fit the question as it was translated,\n"
+        "- a running joke or a deliberately mispronounced word that must stay the same "
+        "each time (don't \"fix\" it),\n"
+        "- callbacks and recurring quotes between distant scenes: an item with "
+        "`repeated_at` has the same original line elsewhere in the film — both must use "
+        "the same wording,\n"
+        "- family terms, nicknames and proper names kept in one form and one spelling "
+        "from the first subtitle to the last,\n"
+        "- tense and person" + ex('*"I think I got it"* → *"chyba je dostałem"*, not *"dostanę"*')
+        + ",\n"
+        "- grammatical agreement across a line break or between two subtitles of one "
+        "sentence,\n"
+        "- formality changing inside one conversation for no reason"
+        + ex("*pan* / *ty*") + ",\n"
+        "- signs and letters written the way the target language writes them"
+        + ex('*"To whom it may concern"* → *"Szanowni Państwo,"*') + ",\n"
+        "- bare 1–2 word follow-up questions that lost their referent"
+        + ex('*"I need a photo." - "Of what?"* → *"Zdjęcie czego?"*, not *"Czego?"*; '
+             '*"Like what?"* → *"Na przykład?"*; *"For what?"* → *"Po co?"*') + ".",
+    ]
+
+    if polish:
+        parts.append(
+            "## Polish naturalness\n"
+            "Typical calques: *\"Przysięgam\"* for a casual *\"I swear\"* (→ *\"Serio\"*, "
+            "*\"Mówię ci\"*), *\"Ta, ta, ta\"* (→ *\"Tak, tak\"*), stiff words in casual "
+            "speech, *\"Start o 11:00\"* (→ *\"Zaczynamy o 11:00\"*), a swear word without "
+            "commas (→ *\"Kurwa, ideał.\"*), an object English left implied "
+            "(*\"Rzucam to\"* → *\"Rzucam studia\"*), food names word for word. "
+            "Swearing keeps its strength: never sanitized, never stronger."
+        )
+
+    parts.append(
         '## Input / output\nInput items look like:\n'
         '```json\n[{"index": "12", "time": "00:03:41,180", '
         '"original": "Did they say how long\\nyou\'ll be gone for?", '
         '"translation": "Powiedzieli, na jak długo wyjeżdżasz?"}]\n```\n'
+        "Optional fields: `cps` (characters per second, present only when the subtitle is "
+        "faster than a viewer reads) and `repeated_at` (other subtitles with the same "
+        "original line and the translation used there). A `{sdh: SPEAKER (NOTE)}` line in "
+        "`original` names who speaks — use it for gender and formality, never translate it.\n"
         "Return a JSON list of defects; `index` must match the item you are reporting on. "
-        "One item may have more than one defect.",
-    ]
+        "One item may have more than one defect."
+    )
 
     if merged_langs:
         base, other = merged_langs[0], "/".join(merged_langs[1:])
@@ -247,6 +355,7 @@ def _response_schema():
                 "severity": types.Schema(type="STRING", enum=list(SEVERITIES)),
                 "problem": types.Schema(type="STRING"),
                 "suggestion": types.Schema(type="STRING"),
+                "delete": types.Schema(type="BOOLEAN"),
             },
         ),
     )
@@ -277,7 +386,7 @@ def review_pairs(pairs: Sequence[dict], api_key: str, model: str, language: str,
 
     for n, batch in enumerate(batches, start=1):
         payload = json.dumps(
-            [{k: p[k] for k in ("index", "time", "original", "translation")} for p in batch],
+            [{k: p[k] for k in PAYLOAD_KEYS if k in p} for p in batch],
             ensure_ascii=False,
         )
         log(f"🔍 Sprawdzam partię {n}/{len(batches)} ({len(batch)} napisów)...")
@@ -301,7 +410,9 @@ def review_pairs(pairs: Sequence[dict], api_key: str, model: str, language: str,
                 continue
             log(f"   [{item.get('severity', '?')}] {item.get('category', '?')} "
                 f"— napis {pair['index']} ({pair['time']}): {item.get('problem', '')}")
-            if item.get("suggestion"):
+            if item.get("delete") and not item.get("suggestion"):
+                log(f"      do usunięcia: {pair['translation']}".replace("\n", " / "))
+            elif item.get("suggestion"):
                 log(f"      było:      {pair['translation']}".replace("\n", " / "))
                 log(f"      propozycja: {item['suggestion']}".replace("\n", " / "))
             issues.append({
@@ -311,6 +422,7 @@ def review_pairs(pairs: Sequence[dict], api_key: str, model: str, language: str,
                 "severity": item.get("severity", "medium"),
                 "problem": item.get("problem", ""),
                 "suggestion": item.get("suggestion", ""),
+                "delete": bool(item.get("delete")),
                 "original": pair["original"],
                 "translation": pair["translation"],
             })
@@ -330,7 +442,8 @@ def apply_suggestions(pairs: Sequence[dict], issues: Sequence[dict], rewrap: boo
 
     Na jeden napis nakładana jest jedna poprawka — ta o najwyższej wadze, bo
     propozycja zastępuje całą jego treść.  Zmieniony napis jest od razu
-    przełamywany według zasad łamania linii.
+    przełamywany według zasad łamania linii.  Usterka z ``delete`` opróżnia
+    napis (``cue.lines == []``) — taki napis trzeba pominąć przy zapisie.
     """
     by_index = {p["index"]: p for p in pairs}
     applied, done = 0, set()
@@ -338,12 +451,22 @@ def apply_suggestions(pairs: Sequence[dict], issues: Sequence[dict], rewrap: boo
     for issue in issues:  # posortowane od najcięższych
         suggestion = (issue.get("suggestion") or "").strip()
         index = issue["index"]
-        if not suggestion or index in done:
+        if index in done:
             continue
         pair = by_index.get(index)
         if not pair:
             continue
         cue = pair["cue"]
+        if issue.get("delete") and not suggestion:
+            # sam odgłos wahania - napis znika (pusty napis odpada przy zapisie)
+            log(f"🗑️  {pair['time']} [{issue['category']}] {' / '.join(cue.lines)}")
+            cue.lines = []
+            issue["applied"] = True
+            done.add(index)
+            applied += 1
+            continue
+        if not suggestion:
+            continue
         new_lines = [line for line in suggestion.split("\n") if line.strip()]
         if not new_lines or new_lines == cue.lines:
             continue
@@ -401,7 +524,10 @@ def format_report(issues: Sequence[dict], translated_path: str, original_path: s
             f"- **tłumaczenie:** {issue['translation']}".replace("\n", " / "),
             f"- **problem:** {issue['problem']}",
         ]
-        if issue.get("suggestion"):
+        if issue.get("delete") and not issue.get("suggestion"):
+            lines.append("- **propozycja:** usunąć napis"
+                         + (" ✅ (usunięty)" if issue.get("applied") else ""))
+        elif issue.get("suggestion"):
             mark = " ✅ (wprowadzona)" if issue.get("applied") else ""
             lines.append(
                 f"- **propozycja:**{mark} {issue['suggestion']}".replace("\n", " / "))
@@ -418,11 +544,14 @@ def review_srt(translated_path: str, original_path: str, api_key: str | None = N
                model: str | None = None, language: str | None = None,
                description: str = "", batch_size: int | None = None,
                limit: int | None = None, report_path: str | None = None,
-               apply: bool = False, log=print) -> tuple[list[dict], dict]:
+               apply: bool = False, refix: bool = False,
+               log=print) -> tuple[list[dict], dict]:
     """Sprawdź plik tłumaczenia względem oryginału. Zwraca (usterki, statystyki).
 
     Z ``apply=True`` znalezione propozycje są wstawiane do sprawdzanego pliku
     (nadpisywanego w miejscu), a zmienione napisy od razu przełamywane.
+    ``refix=True`` puszcza potem na pliku pełne "Fix subs" — poprawki zmieniają
+    długość tekstu, więc czasy wyświetlania trzeba przeliczyć.
     """
     config = gui_config()
     api_key = api_key or os.environ.get("GEMINI_API_KEY") or config.get("gemini_api_key")
@@ -462,12 +591,21 @@ def review_srt(translated_path: str, original_path: str, api_key: str | None = N
         applied = apply_suggestions(pairs, issues, log=log)
         if applied:
             from gst_gui.utils.srt_merge import format_srt
-            text = format_srt(sorted(translated, key=lambda c: (c.start, c.end)))
+            text = format_srt(sorted((c for c in translated if c.lines),
+                                     key=lambda c: (c.start, c.end)))
             tmp = f"{translated_path}.tmp"
             with open(tmp, "w", encoding="utf-8", newline="") as fh:
                 fh.write(text)
             os.replace(tmp, translated_path)
             log(f"✏️  Wprowadzono {applied} poprawek do {os.path.basename(translated_path)}")
+            if refix:
+                try:
+                    from gst_gui.utils.srt_fix import fix_srt
+                except ImportError:
+                    from srt_fix import fix_srt  # type: ignore
+                _, fix_stats = fix_srt(translated_path, source_path=original_path)
+                log(f"✨ Fix subs po poprawkach: {fix_stats.get('extended', 0)} czasów "
+                    f"wydłużonych, {fix_stats.get('rewrapped', 0)} linii przełamanych")
         else:
             log("✏️  Żadna z usterek nie miała gotowej propozycji do wstawienia")
 
@@ -510,6 +648,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, help="sprawdź tylko pierwsze N napisów (test)")
     ap.add_argument("--apply", action="store_true",
                     help="wprowadź znalezione poprawki do sprawdzanego pliku (nadpisuje go)")
+    ap.add_argument("--refix", action="store_true",
+                    help="po wprowadzeniu poprawek puść na pliku Fix subs (czasy, łamanie)")
     args = ap.parse_args(list(argv) if argv is not None else None)
 
     description = args.description
@@ -522,7 +662,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             args.translated, args.original, api_key=args.api_key, model=args.model,
             language=args.language, description=description,
             batch_size=args.batch_size, limit=args.limit,
-            report_path=args.output, apply=args.apply,
+            report_path=args.output, apply=args.apply, refix=args.refix,
             log=lambda m: print(m, file=sys.stderr),
         )
     except ValueError as exc:

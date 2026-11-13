@@ -1236,6 +1236,7 @@ class DragDropGUI:
                 "Re-wraps too long lines and fixes display times."):
             for p in outputs:
                 self.cli_runner.fix_subtitle_file(p['output'], p.get('subtitle'))
+                p['fixed'] = True  # the review re-runs Fix subs after its corrections
             self.status_var.set(f"Fix subs done ({len(outputs)} files)")
 
         reviewable = [p for p in outputs if p.get('subtitle') and Path(p['subtitle']).exists()]
@@ -1303,7 +1304,8 @@ class DragDropGUI:
             total_issues = total_applied = 0
             for i, pair in enumerate(pairs, 1):
                 self.log_to_console(f"🔍 [{i}/{len(pairs)}] {Path(pair['output']).name}")
-                stats = self.cli_runner.review_subtitle_file(pair['output'], pair['subtitle'], config)
+                stats = self.cli_runner.review_subtitle_file(
+                    pair['output'], pair['subtitle'], config, refix=bool(pair.get('fixed')))
                 if stats:
                     total_issues += stats['issues']
                     total_applied += stats['applied']

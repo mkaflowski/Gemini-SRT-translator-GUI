@@ -64,6 +64,31 @@ class SubtitleObject(typing.TypedDict):
     text: str
     time_start: typing.Optional[str]
     time_end: typing.Optional[str]
+    max_chars: typing.Optional[int]
+
+
+# Reading budget of a subtitle - the same numbers "Fix subs" uses for display times.
+BUDGET_CPS = 17.0  # characters per second a viewer reads
+BUDGET_TRAIL_MS = 700  # a subtitle may stay this long after the speech
+BUDGET_MIN_GAP_MS = 83  # ... but must leave this gap before the next one
+BUDGET_MIN = 14
+BUDGET_MAX = 84  # two full lines of 42 characters
+
+
+def char_budget(subtitles: list, i: int, cps: float = BUDGET_CPS) -> int:
+    """
+    How many characters a viewer can read while subtitle `i` is on screen: its own time
+    plus a short stay after the speech (up to the next subtitle). Never more than two
+    full lines.
+    """
+    start_ms = subtitles[i].start.total_seconds() * 1000
+    end_ms = subtitles[i].end.total_seconds() * 1000
+    limit = end_ms + BUDGET_TRAIL_MS
+    if i + 1 < len(subtitles):
+        next_start = subtitles[i + 1].start.total_seconds() * 1000
+        limit = min(limit, max(end_ms, next_start - BUDGET_MIN_GAP_MS))
+    budget = int((limit - start_ms) / 1000 * cps)
+    return max(BUDGET_MIN, min(budget, BUDGET_MAX))
 
 
 class GeminiSRTTranslator:
@@ -833,6 +858,8 @@ class GeminiSRTTranslator:
                             "index": str(i),
                             "text": original_subtitle[i].content,
                         }
+                        if original_subtitle[i].content.strip():
+                            subtitle_kwargs["max_chars"] = char_budget(original_subtitle, i)
                         if self.audio_file:
                             if len(batch) == 0:
                                 offset = original_subtitle[i].start.seconds

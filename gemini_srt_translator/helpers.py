@@ -7,6 +7,42 @@ from google.genai import types
 # ==============================================================================
 
 
+def is_polish(language: Optional[str]) -> bool:
+    """Whether the target language is Polish (name or code, any case)."""
+    return (language or "").strip().lower() in ("polish", "polski", "pl", "pol")
+
+
+def get_translation_style_rules(language: str, section_number: int) -> str:
+    """
+    The subtitling style rules: condensing, the reading budget, what may and may not be
+    dropped, natural target-language wording. Examples are added for Polish only.
+    """
+    polish = is_polish(language)
+
+    def ex(text: str) -> str:
+        return f" ({text})" if polish else ""
+
+    rules = f"""
+## {section_number}. Translation Style: Film Subtitles, Not a Transcript
+A subtitle gives **the meaning, intent and tone** of a line, not every word: the viewer reads it while watching. A good {language} subtitle is usually clearly shorter than a word-for-word translation.
+
+- **Reading budget**: each item has `max_chars` - how many characters a viewer can read in the subtitle's time (spaces count, tags don't, both lines together). Over it: condense. Well under it: keep the full meaning, don't cut for the sake of it. `max_chars` is input only - never return it.
+- **Meaning has priority over the budget**: drop fillers, repetitions and names first, but when the only shorter wording loses or distorts what is said, keep the meaning and go slightly over the limit.
+- **Drop or shorten** when the scene doesn't need it: filler (*well, you know, I mean, like, okay, look*), hesitation sounds (*uh, um*: a `...` shows the pause), stutters and false starts, repetitions{ex('*"No, no, no!"* → *"Nie!"*')}, subject pronouns the language doesn't need{ex('*"Nie wiem"*, not *"Ja nie wiem"*')}, names and forms of address once it's clear who talks to whom, tag questions (*right?, okay?*) that add nothing, long-winded wording{ex('*"Do you think you could possibly help me?"* → *"Pomożesz mi?"*')}.
+- **Never drop**: information the story needs (facts, names on first mention, numbers, times, places), the subject or key noun the next line reacts to, negations and conditions, the point of a joke, irony, threats and promises, the character's register and emotion.
+- **Numbers**: never drop a number to fit the budget; use digits if words are too long.
+- **Sentences split across two items**: each part stays in its own item, and both parts must read as one grammatical {language} sentence together - never drop the verb from both.
+- **Natural {language}, not a calque**: use the idiom a native speaker would use{ex('*"It&#39;s raining cats and dogs"* → *"Leje jak z cebra"*, *"I&#39;m on it"* → *"Już się robi"*')}. Wordplay that can't be kept: a joke with the same function. Unknown cultural references: a general equivalent.
+- **Units**: metric when the exact number doesn't matter; keep numbers that matter for the plot or a joke. Money keeps its currency.
+- **Swearing and crude slang**: the same strength and register, never stronger, and never sanitized or euphemized.
+- **Echoes and callbacks**: when a speaker repeats or questions a word from the previous line, both lines use the same {language} word. A recurring quote is worded the same every time.
+- **Short follow-up questions** (*"Of what?"*, *"For what?"*, *"Like what?"*): read them together with the previous line and repeat the noun or use the natural question{ex('*"I need a photo." - "Of what?"* → *"Zdjęcie czego?"*, not *"Czego?"*; *"Like what?"* → *"Na przykład?"*; *"For what?"* → *"Po co?"*')}.
+- **Gender and formality**: keep the grammatical gender of the speaker and the listener and the level of formality between two characters consistent{ex('*ty* / *pan*, *pani*')}.
+- **Layout**: at most 2 lines of up to 42 characters, broken at phrase boundaries or after punctuation. Two speakers in one item: each on their own line starting with `- `.
+""".replace("&#39;", "'")
+    return rules
+
+
 def get_translate_instruction(
     language: str,
     thinking: bool,
@@ -51,7 +87,8 @@ def get_translate_instruction(
 ]
 ```"""
     prompt_parts.append(
-        f"## {section_number}. Data Structure\nYou will receive and must return a list of items with this exact structure:\n{json_structure}"
+        f"## {section_number}. Data Structure\nYou will receive and must return a list of items with this exact structure:\n{json_structure}\n"
+        "Input items may also carry `max_chars` (the reading budget, see the style rules). Return only `index` and `text`."
     )
 
     # --- Section 3: Core Translation Rules ---
@@ -70,6 +107,10 @@ def get_translate_instruction(
 - **Context-only lines**: A message may end with lines marked "CONTEXT ONLY" (the subtitles that follow the batch). Use them only to understand sentences that continue past the last item; never translate or return them.
 """
     prompt_parts.append(core_rules)
+
+    # --- Translation style: film subtitles, not a transcript ---
+    section_number += 1
+    prompt_parts.append(get_translation_style_rules(language, section_number))
 
     # --- Section 4: Advanced Rules (Conditional) ---
     if audio_file:

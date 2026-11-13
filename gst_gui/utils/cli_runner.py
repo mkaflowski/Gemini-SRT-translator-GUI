@@ -329,8 +329,12 @@ class CLIRunner:
                      f"no room between neighbours")
         return stats
 
-    def review_subtitle_file(self, translated_file, source_file, config):
-        """Let Gemini review the translation and apply its fixes. Never fails the run."""
+    def review_subtitle_file(self, translated_file, source_file, config, refix=False):
+        """Let Gemini review the translation and apply its fixes. Never fails the run.
+
+        refix re-runs "Fix subs" after the corrections (their text length changed);
+        pass it only when the file went through "Fix subs" before the review.
+        """
         if not source_file:
             self.log("🔍 AI review skipped - no source subtitle file to compare against")
             return None
@@ -355,7 +359,8 @@ class CLIRunner:
                 description=config.get('overview', '') or '',
                 batch_size=batch,
                 apply=True,
-                report_path="-",   # po tłumaczeniu wynik idzie do konsoli, bez pliku
+                refix=refix,
+                report_path="-",  # po tłumaczeniu wynik idzie do konsoli, bez pliku
                 log=self.log,
             )
         except Exception as e:
