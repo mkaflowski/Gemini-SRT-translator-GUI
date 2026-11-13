@@ -16,6 +16,19 @@ A desktop application for translating SRT subtitles with Google Gemini - with dr
 - **Language code support** - old language codes are stripped from the filename, the new one is added (`Movie.ita.srt` → `Movie.pl.srt`)
 - **Translator info** - optional `# Translated by <model> #` stamp at the top of the file
 
+### ⚡ Auto (one click from folder to finished subtitles)
+- **`⚡ Auto`** - drop a movie folder (or click the button and pick one) and the app proposes what to translate from, using the same defaults as the `translate-subtitles` skill
+- **Base: English** - a file next to the video, otherwise a text track inside it (plain before SDH)
+- **Reference: the best second language available**, in the order French, Italian, Spanish, Russian, then others; a track in a better language beats a file in a worse one. The target language and your own AI translations (`.ar.srt`) are never used as a source; forced and bitmap tracks are skipped
+- **English SDH** (file or track) adds `{sdh: SPEAKER (NOTE)}` lines so the model knows who is speaking
+- The proposal is shown first and nothing is touched before **Start**. Then the tracks are extracted, base + reference (+ SDH) are merged into one bilingual source, and the pipeline runs without further questions: **Translate → Fix subs → AI review → mark the file as an AI translation**. Each step can be unticked in the dialog
+- Existing files are never overwritten, and an already merged file (`…en_fr.srt`) is used as it is. Works per video, so a season folder is prepared episode by episode
+
+### 🎯 Subtitle-style translation
+- The model is told to write **subtitles, not a transcript**: condense, drop filler and hesitation sounds, keep everything the story needs (facts, numbers, negations, the point of a joke), use natural idioms, keep swearing at its original strength, keep echoes and recurring quotes worded the same
+- Every subtitle is sent with a **reading budget** (`max_chars`: its time on screen at 17 characters per second, at most two lines of 42). Over the budget the model condenses, but **meaning has priority**: when a shorter wording would lose the sense of the sentence, it may go slightly over
+- The rules are language-neutral; Polish examples and typography are added when the target language is Polish
+
 ### 🔀 Bilingual merge (second-language reference)
 Translating from English alone forces the model to guess grammatical gender, formality and idioms. Merging a second-language subtitle track into the source file gives it a second opinion for every line.
 
@@ -33,8 +46,10 @@ Translating from English alone forces the model to guess grammatical gender, for
 - Subtitles that still cannot be fixed are **reported instead of being silently mangled**; optional `--merge-close` joins a too-short subtitle with the next one when they are less than 0.5 s apart.
 
 ### 🔍 AI review of a finished translation
-- **`🔍 AI review`** - compares the translated file with its source (matched by timecode) and reports **translation errors, hallucinations, spelling mistakes, unnatural phrasing and wrong grammatical gender/formality**, each with a severity and a ready-to-use replacement line
-- **The fixes can be written straight back into the subtitles** (on by default in the dialog): one fix per subtitle, the most severe one, and the changed line is re-wrapped immediately so it still fits 42 characters
+- **`🔍 AI review`** - compares the translated file with its source (matched by timecode) and reports **translation errors, answers that no longer fit the question, hallucinations, spelling mistakes, unnatural phrasing, wrong grammatical gender/formality and lines too long to read**, each with a severity and a ready-to-use replacement line
+- The reviewer reads **across subtitles**: callbacks and recurring quotes (a line that returns later in the film is shown with the wording used there), consistent names, tense, formality. Subtitles faster than 17 characters per second are flagged for condensing, again with meaning first
+- A subtitle that is nothing but a hesitation sound (`Yyy...`) can be **deleted** by the review
+- **The fixes can be written straight back into the subtitles** (on by default in the dialog): one fix per subtitle, the most severe one, and the changed line is re-wrapped immediately so it still fits 42 characters. After a translation that went through Fix subs, **Fix subs runs again** after the review, because the corrections changed the text lengths
 - Every defect and every applied fix is printed in the console as it is found
 - The film description (Overview) is passed to the model as context; when the source is one of our **merged bilingual files**, the reference lines are explained to the model and used as a second source of truth
 - Review batches are **1.5× the translation batch size**
@@ -43,7 +58,7 @@ Translating from English alone forces the model to guess grammatical gender, for
 - `Check only first N subtitles` (`--limit N`) runs a cheap trial before spending tokens on the whole film
 
 ### 🧰 Tools that follow the selection
-The buttons above the file list work on whatever is checked, and grey out when the selection cannot feed them: `🎞 Embedded subs` and `📝 Describe video` need a row with a real video file, `🔍 AI review` needs a subtitle file.
+The buttons above the file list work on whatever is checked, and grey out when the selection cannot feed them (`⚡ Auto` works on the whole folder instead): `🎞 Embedded subs` and `📝 Describe video` need a row with a real video file, `🔍 AI review` needs a subtitle file.
 
 ### 🎞 Subtitles from video files
 - **`🎞 Embedded subs`** - detects subtitle tracks embedded in MKV/MP4 files and extracts the chosen one to SRT (matched by language across all selected videos)
@@ -97,7 +112,9 @@ gst_transcribe saves transcribe.txt next to the selected file. If the file is in
 4. **Auto-detection** identifies movies/TV series
 5. *(optional)* **`🔀 Merge subs`** to add a second-language reference track
 6. **Review** extracted information
-7. **Click Translate** - the finished file is fixed automatically, and reviewed by the model too if you turned that on
+7. **Click Translate** - afterwards the app asks whether to run Fix subs, the AI review, and whether to mark the file as an AI translation
+
+Or the short way: drop the folder, click **`⚡ Auto`**, check the proposed sources and press **Start**.
 
 ### Output examples
 - **Input:** `Movie.ita.srt` → **Output:** `Movie.pl.srt` (Italian removed, Polish added)
@@ -120,11 +137,12 @@ python srt_fix.py Movie.pl.srt --check --show    # report only, nothing is writt
 python srt_review.py Movie.pl.srt Movie.eng.en_fr.srt --description "..."
 python srt_review.py Movie.pl.srt Movie.eng.srt --limit 60   # cheap trial run
 python srt_review.py Movie.pl.srt Movie.eng.srt --apply      # write the fixes back
+python srt_review.py Movie.pl.srt Movie.eng.srt --apply --refix   # ...and run Fix subs again
 ```
 
 Useful flags - merge: `--lang-base/--lang-other`, `--min-overlap`, `--best-match-only`, `--keep-music`, `--keep-sdh`, `--shift MS`, `--no-shift`, `--keep-overlaps`.
 Fix: `--max-len`, `--cps` (17 Polish, 20 English, 13 for children), `--min-duration`, `--max-duration`, `--min-gap`, `--merge-close`, `--no-timing`, `-o FILE`.
-Review: `--apply` (write the suggested fixes into the checked file), `--api-key`, `--model`, `--language`, `--description/--description-file`, `--batch-size`, `--limit`, `-o FILE`.
+Review: `--apply` (write the suggested fixes into the checked file), `--refix` (run Fix subs after applying), `--api-key`, `--model`, `--language`, `--description/--description-file`, `--batch-size`, `--limit`, `-o FILE`.
 
 ## ⚙️ Configuration
 
