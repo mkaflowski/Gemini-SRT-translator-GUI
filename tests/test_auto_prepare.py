@@ -63,3 +63,46 @@ def test_execute_merges_base_reference_and_sdh(tmp_path):
     # the second run finds the merged file and has nothing to prepare
     again = ap.plan_folder(tmp_path, probe=lambda path: [])[0]
     assert again["source"] == "Film.en_fr.srt"
+
+
+def test_choose_swaps_the_reference_and_the_defaults_stay_selectable():
+    subs = ["Film.en.srt", "Film.es.srt", "Film.ru.srt"]
+    plan = ap.plan_video("Film.mkv", subs, [track(0, "ita")], 1)
+    assert plan["reference_track"]["language"] == "ita"  # Italian beats the Spanish file
+    labels = [ap.option_label(e) for e in plan["options"]["reference"]]
+    assert labels[:2] == ["Film.es.srt", "Film.ru.srt"] and "ita" in labels[2] and labels[2].startswith("track #1")
+    spanish = plan["options"]["reference"][0]
+    ap.choose(plan, "reference", spanish)
+    assert plan["reference"] == "Film.es.srt" and plan["reference_track"] is None
+    assert plan["reference_lang"] == "es" and ap.current_entry(plan, "reference") is spanish
+    assert "en+es" in ap.outcome(plan)
+    ap.choose(plan, "reference", None)
+    assert not plan["reference"] and "base alone" in ap.outcome(plan)
+    ap.choose(plan, "base", None)
+    assert not ap.is_ready(plan) and "skipped" in ap.outcome(plan)
+
+
+def test_choose_clears_a_ready_source_and_never_uses_the_base_as_sdh():
+    plan = ap.plan_video("Film.mkv", ["Film.en.srt", "Film.fr.srt"], [], 1)
+    assert plan["source"] is None
+    only_base = ap.plan_video("Film.mkv", ["Film.en.srt"], [], 1)
+    assert only_base["source"] == "Film.en.srt"
+    ap.choose(only_base, "base", only_base["options"]["base"][0])
+    assert only_base["source"] is None  # extract/merge again, do not shortcut to the old file
+    plan = ap.plan_video("Film.mkv", ["Film.en.srt", "Film.en.sdh.srt", "Film.fr.srt"], [], 1)
+    assert plan["base"] == "Film.en.srt" and plan["sdh"] == "Film.en.sdh.srt"
+    ap.choose(plan, "base", plan["options"]["base"][1])  # the SDH file becomes the base
+    assert plan["sdh"] is None
+
+
+def test_execute_uses_the_chosen_files(tmp_path):
+    (tmp_path / "Film.mkv").write_bytes(b"")
+    (tmp_path / "Film.en.srt").write_text(srt("Who's there?"), encoding="utf-8")
+    (tmp_path / "Film.fr.srt").write_text(srt("Qui est là ?"), encoding="utf-8")
+    (tmp_path / "Film.es.srt").write_text(srt("¿Quién es?"), encoding="utf-8")
+    plan = ap.plan_folder(tmp_path, probe=lambda path: [])[0]
+    assert plan["reference"] == "Film.fr.srt"
+    ap.choose(plan, "reference", plan["options"]["reference"][1])
+    out = ap.execute_plan(plan, log=lambda *a: None)
+    assert out.endswith("Film.en_es.srt")
+    assert "{es: ¿Quién es?}" in (tmp_path / "Film.en_es.srt").read_text(encoding="utf-8")

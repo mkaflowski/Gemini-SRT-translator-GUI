@@ -2272,6 +2272,58 @@ class DragDropGUI:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    @staticmethod
+    def _auto_plan_editable(plan):
+        """Whether the plan offers subtitle sources to choose between (not a ready merged file)"""
+        return not plan.get('merged') and any(plan.get('options', {}).values())
+
+    def _build_auto_card(self, parent, plan):
+        """One video in the Auto dialog: its sources as drop-downs that edit ``plan`` in place"""
+        card = ctk.CTkFrame(parent)
+        card.pack(fill="x", padx=2, pady=4)
+        ctk.CTkLabel(card, text=f"🎬 {plan['video'] or 'Subtitles in the folder'}",
+                     font=ctk.CTkFont(size=12, weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(6, 2))
+        if not self._auto_plan_editable(plan):
+            lines = auto_prepare.describe_plan(plan)[1:]
+            ctk.CTkLabel(card, text="\n".join(lines).strip(), font=ctk.CTkFont(size=11),
+                         anchor="w", justify="left").pack(fill="x", padx=10, pady=(0, 6))
+            return
+
+        none_label = "(none)"
+        roles = [('base', "Base (en)"), ('reference', "Reference"), ('sdh', "Speaker context (SDH)")]
+        options = plan['options']
+        by_label = {role: {auto_prepare.option_label(e): e for e in options[role]} for role, _ in roles}
+        menus = {}
+        summary = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11), anchor="w", justify="left")
+
+        def sync():
+            base = auto_prepare.current_entry(plan, 'base')
+            for role, _ in roles:
+                labels = [auto_prepare.option_label(e) for e in options[role]
+                          if not (role == 'sdh' and e is base)]
+                menus[role].configure(values=[none_label] + labels,
+                                      state="normal" if labels else "disabled")
+                entry = auto_prepare.current_entry(plan, role)
+                menus[role].set(auto_prepare.option_label(entry) if entry else none_label)
+            summary.configure(text=auto_prepare.outcome(plan))
+
+        def on_pick(role, value):
+            auto_prepare.choose(plan, role, by_label[role].get(value))
+            sync()
+
+        for role, title in roles:
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=10, pady=1)
+            ctk.CTkLabel(row, text=title, width=150, anchor="w",
+                         font=ctk.CTkFont(size=11)).pack(side="left")
+            menus[role] = ctk.CTkOptionMenu(row, values=[none_label], width=540, dynamic_resizing=False,
+                                            font=ctk.CTkFont(size=11),
+                                            command=lambda value, r=role: on_pick(r, value))
+            menus[role].pack(side="left")
+        summary.pack(fill="x", padx=10, pady=(2, 6))
+        sync()
+
     def _show_auto_dialog(self, plans, ai_code):
         """Show the proposed sources and the steps to run; nothing happens before 'Start'"""
         dialog = ctk.CTkToplevel(self.root)
@@ -2280,17 +2332,14 @@ class DragDropGUI:
         dialog.grab_set()
         dialog.geometry(f"+{self.root.winfo_rootx() + 200}+{self.root.winfo_rooty() + 120}")
 
-        ctk.CTkLabel(dialog, text="Proposed sources",
+        ctk.CTkLabel(dialog, text="Proposed sources (change them with the drop-downs)",
                      font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=20, pady=(15, 4))
-        shown = plans[:8]
-        text = "\n".join("\n".join(auto_prepare.describe_plan(p)) for p in shown)
-        if len(plans) > len(shown):
-            text += f"\n... and {len(plans) - len(shown)} more videos, prepared the same way"
-        box = ctk.CTkTextbox(dialog, width=760, height=min(320, 40 + 18 * (text.count("\n") + 1)),
-                             font=ctk.CTkFont(size=11), wrap="none")
-        box.insert("1.0", text)
-        box.configure(state="disabled")
-        box.pack(padx=20, pady=(0, 10))
+        editable_count = sum(1 for p in plans if self._auto_plan_editable(p))
+        scroll = ctk.CTkScrollableFrame(
+            dialog, width=740, height=min(380, 40 + 125 * editable_count + 60 * (len(plans) - editable_count)))
+        scroll.pack(padx=20, pady=(0, 10), fill="x")
+        for plan in plans:
+            self._build_auto_card(scroll, plan)
 
         ctk.CTkLabel(dialog, text="Then", font=ctk.CTkFont(size=13, weight="bold")).pack(
             anchor="w", padx=20, pady=(0, 4))
@@ -2312,6 +2361,10 @@ class DragDropGUI:
         buttons.pack(fill="x", padx=20, pady=(15, 15))
 
         def on_start():
+            if not any(auto_prepare.is_ready(p) for p in plans):
+                messagebox.showinfo("Auto", "Nothing is selected - pick at least one subtitle source.",
+                                    parent=dialog)
+                return
             steps = {'translate': translate_var.get(), 'fix': fix_var.get(),
                      'review': review_var.get(), 'rename': rename_var.get()}
             dialog.destroy()

@@ -58,6 +58,59 @@ def track_is_sdh(track: dict) -> bool:
     return bool(track.get('sdh') or _SDH_RE.search(track.get('title') or ''))
 
 
+def _entry(file: str | None, track: dict | None, lang: str) -> dict:
+    """One thing a role (base, reference, SDH) can be filled with: a file or a track."""
+    return {'file': file, 'track': track, 'lang': lang}
+
+
+def option_label(entry: dict) -> str:
+    """Text of an option in the Auto dialog's drop-down."""
+    if entry.get('file'):
+        return entry['file']
+    return f"track {format_track_label(entry['track'])}"
+
+
+def current_entry(plan: dict, role: str) -> dict | None:
+    """The option of ``role`` ('base' | 'reference' | 'sdh') the plan currently uses."""
+    file_name, track = plan.get(role), plan.get(role + '_track')
+    for entry in plan.get('options', {}).get(role, []):
+        if file_name and entry['file'] == file_name:
+            return entry
+        if track and entry['track'] and entry['track']['type_index'] == track['type_index']:
+            return entry
+    return None
+
+
+def choose(plan: dict, role: str, entry: dict | None) -> None:
+    """Use ``entry`` (one of ``plan['options'][role]``, or None for nothing) for ``role``."""
+    plan[role] = entry['file'] if entry else None
+    plan[role + '_track'] = entry['track'] if entry else None
+    if role == 'reference':
+        plan['reference_lang'] = entry['lang'] if entry else None
+    plan['source'] = None  # the sources changed: extract/merge instead of using a ready file
+    # the speaker context must not be the base itself
+    same_file = plan.get('sdh') and plan['sdh'] == plan.get('base')
+    sdh_track, base_track = plan.get('sdh_track'), plan.get('base_track')
+    same_track = sdh_track and base_track and sdh_track['type_index'] == base_track['type_index']
+    if same_file or same_track:
+        plan['sdh'] = plan['sdh_track'] = None
+
+
+def outcome(plan: dict) -> str:
+    """One line on what the plan leads to, for the Auto dialog."""
+    if plan.get('merged'):
+        return f"use the merged file: {plan['merged']}"
+    base = plan.get('base') or plan.get('base_track')
+    ref = plan.get('reference') or plan.get('reference_track')
+    if base and ref:
+        return f"→ merge into one en+{plan['reference_lang']} source, lyrics and SDH notes removed"
+    if base:
+        return "→ no second language: translating from the base alone"
+    if ref:
+        return "⚠️ no English subtitles - translating from the reference alone"
+    return "⚠️ nothing selected - this video is skipped"
+
+
 def plan_video(video: str | None, sub_names: list[str], tracks: list[dict], n_videos: int,
                target_code: str = 'pl', ai_code: str = 'ar') -> dict:
     """Default sources for one video (or for a folder without a video).
@@ -106,6 +159,15 @@ def plan_video(video: str | None, sub_names: list[str], tracks: list[dict], n_vi
         plan['sdh_track'] = en_sdh[0]
     ref_tracks = sorted((t for t in usable if lang_of(t) not in not_reference),
                         key=lambda t: (_ref_rank(lang_of(t)), track_is_sdh(t)))
+    # everything the user may pick instead of the defaults (see ``choose``)
+    english = [_entry(f, None, BASE_LANG) for f in base_files] \
+        + [_entry(None, t, BASE_LANG) for t in en_tracks]
+    plan['options'] = {
+        'base': english,
+        'reference': [_entry(f, None, langs[f]) for f in ref_files]
+        + [_entry(None, t, lang_of(t)) for t in ref_tracks],
+        'sdh': english,
+    }
     # a track in a better language than every file next to the video wins
     if ref_tracks and (not plan['reference']
                        or _ref_rank(lang_of(ref_tracks[0])) < _ref_rank(plan['reference_lang'])):

@@ -39,6 +39,18 @@ def test_auto_dialog_and_auto_post_steps(gui, tmp_path, monkeypatch):
     gui.root.update()
     dialogs = [w for w in gui.root.winfo_children() if isinstance(w, ctk.CTkToplevel)]
     assert dialogs
+    # the sources are drop-downs that edit the plan
+    menus = []
+    def collect(widget):
+        for child in widget.winfo_children():
+            if isinstance(child, ctk.CTkOptionMenu):
+                menus.append(child)
+            collect(child)
+    collect(dialogs[0])
+    assert len(menus) == 3
+    menus[1].set("(none)")
+    menus[1]._command("(none)")
+    assert plan["reference_track"] is None
     for dialog in dialogs:
         dialog.destroy()
 

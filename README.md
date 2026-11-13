@@ -21,7 +21,7 @@ A desktop application for translating SRT subtitles with Google Gemini - with dr
 - **Base: English** - a file next to the video, otherwise a text track inside it (plain before SDH)
 - **Reference: the best second language available**, in the order French, Italian, Spanish, Russian, then others; a track in a better language beats a file in a worse one. The target language and your own AI translations (`.ar.srt`) are never used as a source; forced and bitmap tracks are skipped
 - **English SDH** (file or track) adds `{sdh: SPEAKER (NOTE)}` lines so the model knows who is speaking
-- The proposal is shown first and nothing is touched before **Start**. Then the tracks are extracted, base + reference (+ SDH) are merged into one bilingual source, and the pipeline runs without further questions: **Translate → Fix subs → AI review → mark the file as an AI translation**. Each step can be unticked in the dialog
+- The proposal is shown first, with drop-downs per video for the base, the reference and the SDH context (every file and text track found, or "(none)"), so you can change any of them. Nothing is touched before **Start**. Then the tracks are extracted, base + reference (+ SDH) are merged into one bilingual source, and the pipeline runs without further questions: **Translate → Fix subs → AI review → mark the file as an AI translation**. Each step can be unticked in the dialog
 - Existing files are never overwritten, and an already merged file (`…en_fr.srt`) is used as it is. Works per video, so a season folder is prepared episode by episode
 
 ### 🎯 Subtitle-style translation
