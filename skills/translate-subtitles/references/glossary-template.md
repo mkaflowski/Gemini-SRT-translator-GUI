@@ -11,6 +11,18 @@
 - **Plot:** <2–4 sentences>
 - **Setting and era:** <where, when>
 - **Register:** <e.g. street slang with heavy swearing; formal period speech; faithful translation asked for>
+- **Registers by source** (when the film mixes them, e.g. a documentary): <e.g. news anchors and quoted articles: neutral, written Polish ("odbywać karę", "został oskarżony"); courtroom: formal; home footage: casual spoken Polish>
+
+## Titles and real-world references
+
+<!-- Films, series, books, songs, shows, companies, products named in the film. Use a Polish
+     title only when you have checked it is the official Polish release title; otherwise keep
+     the original. Example rows:
+| The Dropout (Hulu series) | The Dropout | no checked Polish title, kept the original |
+| Bad Blood (book) | Zła krew | checked: Polish edition title | -->
+
+| Source | Polish | Notes |
+|---|---|---|
 
 <!-- Series: one line per episode once it is translated.
 - S01E02 "<title>": <one sentence> -->

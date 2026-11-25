@@ -80,6 +80,8 @@ Otherwise, from the file name get the title, year and whether it is a series (`S
 
 Then create the glossary from `references/glossary-template.md` (next to this file) and fill in "Film", "Characters" and "Address" with what you found. Keep all its sections; the translation fills the rest.
 
+Also skim the source for **titles and real-world references** (other films, series, books, shows, companies) and, for each, check whether an official Polish title exists; write the result into "Titles and real-world references" (the original title when none is confirmed). If the film mixes voices (a documentary with news clips, court footage and home video), fill in "Registers by source" so every batch uses the same register for the same kind of voice.
+
 ## Step 7: Batch translation
 
 **Folders.** `$W` = `<folder>/.translate_work/<video name without extension>`. Glossary: `<folder>/.translate_work/glossary.md`.

@@ -23,7 +23,7 @@ Report only **real** defects:
 - `coherence`: an answer that doesn't fit the question, a lost echo or callback between speakers
 - `hallucination`: content not in the original
 - `spelling`: spelling, grammar, punctuation, typos
-- `unnatural`: correct but not what a Pole would say (calque, word order, register)
+- `unnatural`: correct but not what a Pole would say (calque, word order, register). **A calque is a defect even when it is grammatical and the meaning comes through**: if a Polish speaker would never say it that way (*"Świat wierzy w pewną rzeczywistość o mnie"*, *"Robiłam źle to, że"*, *"moja niepewność"* for *insecurity*, *"Wybierz kawałek mądrze"*), report it with the natural wording. "An acceptable alternative" means another natural Polish wording, never a literal one
 - `gender`: wrong gender, number or formality of the speaker or the listener
 - `condense`: too long to read (`cps`) where a shorter wording keeps the meaning, or a word-for-word rendering of something a subtitler would say in a few words. Meaning has priority: never condense so far that the sentence loses its sense; a cue slightly over the reading speed is better than a cut one
 
@@ -37,7 +37,11 @@ Condensing and dropping filler are **not** defects; dropping information the sto
 - tense and person (*"I think I got it"* → *"chyba je dostałem"*, not *"dostanę"*),
 - agreement across a line break (*"na kałamarnice, od którego"* → *"na gulasz z kałamarnicy, od którego"*),
 - `pan`/`ty` changing inside one conversation for no reason,
-- signs and letters written the Polish way (*"To whom it may concern"* → *"Szanowni Państwo,"*).
+- signs and letters written the Polish way (*"To whom it may concern"* → *"Szanowni Państwo,"*),
+- a sentence split over 2–4 cues: read it whole; a cue ending on a construction copied from the English break (*"- Robiłam źle to, że"* for *"What I was doing wrong is"*) is a defect: rebuild the Polish sentence over the same cues,
+- register by voice: news anchors, quoted articles and court rulings in neutral written Polish, not *"odsiadka"*, *"ma zarzuty"*, *"kłamczucha"* (the glossary's "Registers by source"),
+- titles of films, series and books: the original title unless the glossary has a checked Polish one; a made-up or borrowed Polish title is a `translation` defect,
+- amounts written the Polish way (*"60 mld dolarów"*, not *"60 mld $"*); technical terms rendered by meaning (*"patient testing"* → *"badania krwi pacjentów"*, not *"badania na pacjentach"*).
 
 **Polish naturalness**, typical calques: *"Przysięgam"* for a casual *"I swear"* (→ *"Serio"*, *"Mówię ci"*), *"Ta, ta, ta"* (→ *"Tak, tak"*), stiff words in casual speech (*"wadzi"*), *"Start o 11:00"* (→ *"Zaczynamy o 11:00"*), a swear word without commas (→ *"Kurwa, ideał."*), an object English left implied (*"Rzucam to"* → *"Rzucam studia"*), food names word for word (*"basy pasiaste"* → *"bassy"*), and bare 1–2 word follow-up questions (*"I need a photo." - "Of what?"* → *"Zdjęcie czego?"*, not *"Czego?"*; *"Like what?"* → *"Na przykład?"*; *"For what?"* → *"Po co?"*).
 
