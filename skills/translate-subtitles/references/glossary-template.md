@@ -18,8 +18,8 @@
 <!-- Films, series, books, songs, shows, companies, products named in the film. Use a Polish
      title only when you have checked it is the official Polish release title; otherwise keep
      the original. Example rows:
-| The Dropout (Hulu series) | The Dropout | no checked Polish title, kept the original |
-| Bad Blood (book) | Zła krew | checked: Polish edition title | -->
+| The Dropout (Hulu series) | Zepsuta krew | official Polish title |
+| <a show with no Polish release> | <original title> | no Polish title found, kept the original | -->
 
 | Source | Polish | Notes |
 |---|---|---|
